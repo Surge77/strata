@@ -1,3 +1,4 @@
+strata_add_test(arena_test   SUITE unit SOURCES arena_test.cpp)
 strata_add_test(coding_test  SUITE unit SOURCES coding_test.cpp)
 strata_add_test(crc32c_test  SUITE unit SOURCES crc32c_test.cpp)
 strata_add_test(slice_test   SUITE unit SOURCES slice_test.cpp)
