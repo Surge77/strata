@@ -1,0 +1,31 @@
+---
+# Checks are chosen for a systems codebase that parses untrusted bytes and
+# manages raw resources: bugprone/cert/misc plus the parts of cppcoreguidelines
+# that catch real lifetime and arithmetic mistakes.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -misc-non-private-member-variables-in-classes
+
+WarningsAsErrors: 'bugprone-*,clang-analyzer-*,concurrency-*'
+HeaderFilterRegex: '(include/strata|src)/.*'
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '30'

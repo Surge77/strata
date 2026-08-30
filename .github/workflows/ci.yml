@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: every job here only reads the repository. Without this block
+# the token inherits whatever the repository or organization default is, which
+# may include write scopes these build commands have no use for.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STRATA_BUILD_DIR: ${{ github.workspace }}/../strata-build
+
+jobs:
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - name: Check formatting
+        run: |
+          mapfile -t files < <(git ls-files '*.cpp' '*.hpp' '*.h' '*.cc')
+          if [ ${#files[@]} -eq 0 ]; then echo "no sources"; exit 0; fi
+          clang-format-18 --dry-run --Werror "${files[@]}"
+
+  build:
+    name: ${{ matrix.compiler }} / ${{ matrix.build_type }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, RelWithDebInfo]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake g++-13 clang-18
+      - name: Select compiler
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            echo "CC=gcc-13"    >> "$GITHUB_ENV"
+            echo "CXX=g++-13"   >> "$GITHUB_ENV"
+          else
+            echo "CC=clang-18"  >> "$GITHUB_ENV"
+            echo "CXX=clang++-18" >> "$GITHUB_ENV"
+          fi
+      - name: Build
+        run: scripts/build.sh --build-dir "$STRATA_BUILD_DIR"
+        env:
+          STRATA_BUILD_TYPE: ${{ matrix.build_type }}
+      - name: Test
+        run: scripts/test.sh --build-dir "$STRATA_BUILD_DIR"
+
+  sanitizers:
+    name: ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake clang-18
+      - name: Build and test
+        env:
+          CC: clang-18
+          CXX: clang++-18
+          # halt_on_error keeps a sanitizer report from being buried by later output.
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          scripts/build.sh --${{ matrix.sanitizer }} --build-dir "$STRATA_BUILD_DIR"
+          scripts/test.sh --build-dir "$STRATA_BUILD_DIR"
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake g++-13 gcovr
+      - name: Build instrumented
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: scripts/build.sh --coverage --build-dir "$STRATA_BUILD_DIR"
+      - name: Test
+        run: scripts/test.sh --build-dir "$STRATA_BUILD_DIR"
+      - name: Report
+        run: |
+          gcovr --root . \
+                --filter 'src/' --filter 'include/' \
+                --exclude-unreachable-branches \
+                --print-summary \
+                --xml coverage.xml \
+                --fail-under-line 80 \
+                "$STRATA_BUILD_DIR"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
