@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: every job here only reads the repository. Without this block
+# the token inherits whatever the repository or organization default is, which
+# may include write scopes these build commands have no use for.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -19,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format-18
       - name: Check formatting
@@ -37,6 +45,8 @@ jobs:
         build_type: [Debug, RelWithDebInfo]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -66,6 +76,8 @@ jobs:
         sanitizer: [asan, tsan]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -87,6 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: |
           sudo apt-get update
