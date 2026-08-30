@@ -9,6 +9,8 @@ static_assert(strata::kVersionPatch == STRATA_VERSION_PATCH);
 
 namespace strata {
 
-std::string_view version_string() noexcept { return STRATA_VERSION_STRING; }
+std::string_view version_string() noexcept {
+  return STRATA_VERSION_STRING;
+}
 
 }  // namespace strata

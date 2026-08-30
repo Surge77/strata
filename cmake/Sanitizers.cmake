@@ -34,3 +34,20 @@ if(STRATA_COVERAGE)
     target_link_options(strata_sanitizers INTERFACE --coverage)
   endif()
 endif()
+
+# ThreadSanitizer's shadow-memory layout is incompatible with the ASLR entropy
+# Linux 6.6+ ships by default (vm.mmap_rnd_bits=32): the process aborts with
+# "FATAL: ThreadSanitizer: unexpected memory mapping" before main() runs.
+# Lowering the sysctl requires root; running the binary with randomization off
+# does not, so TSan test binaries are launched through `setarch -R`.
+set(STRATA_TEST_LAUNCHER "" CACHE INTERNAL "Launcher prefix for test binaries")
+
+if(STRATA_SANITIZER STREQUAL "thread")
+  find_program(STRATA_SETARCH setarch)
+  if(STRATA_SETARCH)
+    set(STRATA_TEST_LAUNCHER "${STRATA_SETARCH};-R" CACHE INTERNAL "")
+    message(STATUS "TSan: launching tests via ${STRATA_SETARCH} -R (ASLR disabled)")
+  else()
+    message(WARNING "setarch not found; ThreadSanitizer tests may abort at startup")
+  endif()
+endif()

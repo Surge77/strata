@@ -1,10 +1,10 @@
 #include "strata/version.hpp"
 
-#include <gtest/gtest.h>
-
 #include <charconv>
 #include <string_view>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 namespace {
 

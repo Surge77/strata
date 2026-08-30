@@ -21,6 +21,14 @@ function(strata_add_test name)
   target_link_libraries(${name} PRIVATE strata strata_warnings GTest::gtest_main)
   target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/src
                                              ${CMAKE_CURRENT_SOURCE_DIR})
+
+  # Set before discovery so gtest_discover_tests both enumerates and runs the
+  # binary through the launcher (see cmake/Sanitizers.cmake).
+  if(STRATA_TEST_LAUNCHER)
+    set_target_properties(${name} PROPERTIES
+        CROSSCOMPILING_EMULATOR "${STRATA_TEST_LAUNCHER}")
+  endif()
+
   gtest_discover_tests(${name}
       PROPERTIES LABELS "${ARG_SUITE}"
       DISCOVERY_TIMEOUT 30)
