@@ -1,6 +1,8 @@
 # Sources are listed explicitly rather than globbed so that adding a file is a
 # reviewable change and CMake never silently misses one after a rebase.
 add_library(strata STATIC
+    util/coding.cpp
+    util/crc32c.cpp
     util/status.cpp
     version.cpp)
 
