@@ -1,0 +1,18 @@
+# The repository is edited on Windows but built and run on Linux. Without this,
+# core.autocrlf would give shell scripts CRLF line endings, which makes them fail
+# in WSL with "bad interpreter: /usr/bin/env bash^M".
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.cpp     text eol=lf
+*.hpp     text eol=lf
+*.h       text eol=lf
+*.cmake   text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+CMakeLists.txt text eol=lf
+
+*.png binary
+*.jpg binary
+*.svg text eol=lf

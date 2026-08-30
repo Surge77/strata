@@ -1,0 +1,32 @@
+# Build output. Builds live on ext4 outside the repo (see scripts/build.sh),
+# but keep these so an accidental in-tree build is never committed.
+build/
+build-*/
+cmake-build-*/
+out/
+_deps/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# Test and benchmark data directories
+*.strata-data/
+testdata/
+benchmarks/report/*.json
+benchmarks/report/*.csv
+
+# Coverage and profiling artifacts
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+coverage/
+perf.data*
+*.svg.tmp
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
