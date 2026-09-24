@@ -11,6 +11,8 @@
 #include <gtest/gtest.h>
 
 #include "db/filename.hpp"
+#include "db/write_batch_internal.hpp"
+#include "log/log_writer.hpp"
 #include "support/file_util.hpp"
 #include "support/test_dir.hpp"
 
@@ -313,6 +315,59 @@ TEST_F(DBTest, IgnoreWalCorruptionSalvagesTheRest) {
   Open(options);
   EXPECT_EQ(Get("damaged"), "NOT_FOUND");
   EXPECT_EQ(Get("later"), "2");
+}
+
+// A log record can pass its checksum and still not be a WriteBatch -- a bug
+// in a writer, or a log from another program. Recovery must treat it as
+// corruption: fail by default, skip it when salvaging.
+class RecoveryOfNonBatches : public DBTest {
+ protected:
+  void WriteLogWithBadRecords() {
+    ASSERT_TRUE(std::filesystem::create_directories(dir_.File("db")));
+    auto file = strata::Env::Default()->NewWritableFile(strata::LogFileName(dir_.File("db"), 1));
+    ASSERT_TRUE(file.ok());
+    strata::log::Writer writer(file->get());
+    WriteBatch good;
+    good.Put("good", "yes");
+    strata::WriteBatchInternal::SetSequence(&good, 1);
+    ASSERT_TRUE(writer.AddRecord("tiny").ok());  // shorter than a batch header
+    std::string lying(strata::WriteBatchInternal::Contents(good));
+    lying[8] = 5;  // count claims 5 operations; the batch holds 1
+    ASSERT_TRUE(writer.AddRecord(lying).ok());
+    ASSERT_TRUE(writer.AddRecord(strata::WriteBatchInternal::Contents(good)).ok());
+    ASSERT_TRUE((*file)->Close().ok());
+  }
+};
+
+TEST_F(RecoveryOfNonBatches, FailOpenByDefault) {
+  WriteLogWithBadRecords();
+  const Status status = DB::Open(DefaultOptions(), &db_);
+  EXPECT_TRUE(status.IsCorruption()) << status.ToString();
+}
+
+TEST_F(RecoveryOfNonBatches, AreSkippedWhenSalvaging) {
+  WriteLogWithBadRecords();
+  Options options = DefaultOptions();
+  options.ignore_wal_corruption = true;
+  Open(options);
+  EXPECT_EQ(Get("good"), "yes");
+  const std::string log = strata::test::ReadFileToString(dir_.File("db/LOG"));
+  EXPECT_NE(log.find("shorter than a batch"), std::string::npos) << log;
+  EXPECT_NE(log.find("count does not match"), std::string::npos) << log;
+}
+
+// Files that are not the database's own are neither recovered nor touched.
+TEST_F(DBTest, StrayFilesAreIgnored) {
+  Open();
+  ASSERT_TRUE(db_.Put("k", "v").ok());
+  ASSERT_TRUE(db_.Close().ok());
+  {
+    std::ofstream stray(dir_.File("db/notes.txt"));
+    stray << "not ours";
+  }
+  Open();
+  EXPECT_EQ(Get("k"), "v");
+  EXPECT_TRUE(std::filesystem::exists(dir_.File("db/notes.txt")));
 }
 
 TEST_F(DBTest, ConcurrentWritersAndReadersAreSafe) {
