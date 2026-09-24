@@ -79,6 +79,37 @@ TEST(WriteBatch, KeysAndValuesAreArbitraryBytes) {
   EXPECT_EQ(check.sizes, (std::vector<std::size_t>{100000, 0}));
 }
 
+// A Slice may claim any size; the batch must refuse to encode one past the
+// format's limits rather than truncate its length. The bytes are never read,
+// so a tiny buffer can stand in for a 5 GiB key.
+TEST(WriteBatch, OversizedOperationsPoisonTheBatchInsteadOfTruncating) {
+  const char byte = 'x';
+  const Slice huge(&byte, WriteBatch::kMaxValueSize + 1ULL);
+  const Slice huge_key(&byte, WriteBatch::kMaxKeySize + 1ULL);
+
+  WriteBatch batch;
+  batch.Put("ok", "fine");
+  batch.Put("k", huge);
+  EXPECT_TRUE(batch.oversized());
+  EXPECT_EQ(batch.Count(), 1U);  // the oversized Put was not recorded
+  EXPECT_EQ(Render(batch), "Put(ok, fine)");
+
+  WriteBatch deletes;
+  deletes.Delete(huge_key);
+  EXPECT_TRUE(deletes.oversized());
+  WriteBatch puts;
+  puts.Put(huge_key, "v");
+  EXPECT_TRUE(puts.oversized());
+
+  WriteBatch clean;
+  clean.Put("a", "b");
+  EXPECT_FALSE(clean.oversized());
+  clean.Append(deletes);
+  EXPECT_TRUE(clean.oversized()) << "Append must carry the mark";
+  clean.Clear();
+  EXPECT_FALSE(clean.oversized());
+}
+
 TEST(WriteBatch, SequenceNumberRoundTrips) {
   WriteBatch batch;
   batch.Put("a", "1");

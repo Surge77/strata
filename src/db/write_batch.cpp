@@ -15,6 +15,7 @@ WriteBatch::WriteBatch() {
 void WriteBatch::Clear() {
   rep_.clear();
   rep_.resize(WriteBatchInternal::kHeaderSize);
+  oversized_ = false;
 }
 
 std::uint32_t WriteBatch::Count() const noexcept {
@@ -22,6 +23,10 @@ std::uint32_t WriteBatch::Count() const noexcept {
 }
 
 void WriteBatch::Put(Slice key, Slice value) {
+  if (key.size() > kMaxKeySize || value.size() > kMaxValueSize) {
+    oversized_ = true;
+    return;
+  }
   WriteBatchInternal::SetCount(this, Count() + 1);
   rep_.push_back(static_cast<char>(ValueType::kValue));
   PutLengthPrefixedSlice(&rep_, key);
@@ -29,12 +34,17 @@ void WriteBatch::Put(Slice key, Slice value) {
 }
 
 void WriteBatch::Delete(Slice key) {
+  if (key.size() > kMaxKeySize) {
+    oversized_ = true;
+    return;
+  }
   WriteBatchInternal::SetCount(this, Count() + 1);
   rep_.push_back(static_cast<char>(ValueType::kDeletion));
   PutLengthPrefixedSlice(&rep_, key);
 }
 
 void WriteBatch::Append(const WriteBatch& other) {
+  oversized_ = oversized_ || other.oversized_;
   WriteBatchInternal::SetCount(this, Count() + other.Count());
   rep_.append(other.rep_, WriteBatchInternal::kHeaderSize);
 }
