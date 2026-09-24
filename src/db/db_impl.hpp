@@ -83,6 +83,9 @@ class DBImpl {
   std::unique_ptr<VersionSet> versions_;
   std::shared_ptr<MemTable> mem_;
   std::shared_ptr<MemTable> imm_;           // being flushed, or waiting to be
+  // Newest sequence number in imm_. What the flush commits as the MANIFEST's
+  // last sequence: writes after it live only in the active log.
+  SequenceNumber imm_last_sequence_ = 0;
   std::unique_ptr<WritableFile> log_file_;  // outlives log_, which points into it
   std::unique_ptr<log::Writer> log_;
   std::uint64_t log_number_ = 0;

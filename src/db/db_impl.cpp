@@ -312,6 +312,7 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
       return status;
     }
     imm_ = std::move(mem_);
+    imm_last_sequence_ = last_sequence_;
     mem_ = std::make_shared<MemTable>(&internal_comparator_);
     background_work_.notify_one();
   }
@@ -333,7 +334,9 @@ void DBImpl::BackgroundLoop() {
       // Logs before the active one hold only what `imm` held, which is now in
       // a table: committing the active log number retires them.
       edit.SetLogNumber(log_number_);
-      versions_->SetLastSequence(last_sequence_);
+      // Not last_sequence_: writes that arrived during the flush are only in
+      // the active log, and replay skips anything at or below this number.
+      versions_->SetLastSequence(imm_last_sequence_);
       status = versions_->LogAndApply(&edit);
     }
     if (status.ok()) {
