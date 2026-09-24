@@ -4,6 +4,7 @@ add_library(strata STATIC
     util/arena.cpp
     util/coding.cpp
     util/crc32c.cpp
+    util/env_posix.cpp
     util/status.cpp
     version.cpp)
 
