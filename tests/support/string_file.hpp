@@ -67,4 +67,22 @@ class StringSource final : public SequentialFile {
   bool fail_reads_ = false;
 };
 
+// A RandomAccessFile over an in-memory string (fuzzing and table tests).
+class StringRandomAccessFile final : public RandomAccessFile {
+ public:
+  explicit StringRandomAccessFile(std::string contents) : contents_(std::move(contents)) {}
+
+  Result<Slice> Read(std::uint64_t offset, std::size_t n, char* scratch) const override {
+    if (offset >= contents_.size()) {
+      return Slice(scratch, 0);
+    }
+    const std::size_t count = std::min<std::size_t>(n, contents_.size() - offset);
+    std::memcpy(scratch, contents_.data() + offset, count);
+    return Slice(scratch, count);
+  }
+
+ private:
+  std::string contents_;
+};
+
 }  // namespace strata::test
