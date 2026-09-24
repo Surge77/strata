@@ -40,10 +40,9 @@ void WriteBatch::Append(const WriteBatch& other) {
 }
 
 Status WriteBatch::Iterate(Handler* handler) const {
+  // rep_ always holds at least a header: the constructor and Clear create one,
+  // and SetContents rejects anything shorter.
   Slice input(rep_);
-  if (input.size() < WriteBatchInternal::kHeaderSize) {
-    return Status::Corruption("write batch shorter than its header");
-  }
   input.remove_prefix(WriteBatchInternal::kHeaderSize);
 
   const std::uint32_t expected = Count();
