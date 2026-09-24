@@ -68,6 +68,13 @@ class RandomAccessFile {
 //   Sync    -- the bytes are on stable storage.
 // Sync does not make the file's *name* durable. A newly created file can still
 // vanish after power loss until Env::SyncDir is called on its directory.
+//
+// Errors are sticky: once Append, Flush, or Sync fails, every later call
+// returns that failure. After a failed write it is unknown how much reached the
+// file, and after a failed fsync the kernel may already have discarded the
+// dirty pages, so a later successful Sync would not mean the data is durable.
+// A caller that sees an error must abandon the file (a log writer starts a new
+// log) rather than retry.
 class WritableFile {
  public:
   WritableFile() = default;

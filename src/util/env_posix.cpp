@@ -134,6 +134,7 @@ class PosixWritableFile final : public WritableFile {
   // user-space buffer so that each one does not cost a system call. Large
   // appends bypass the buffer instead of being copied through it.
   Status Append(Slice data) override {
+    STRATA_RETURN_IF_ERROR(error_);
     if (buffer_.size() + data.size() <= kBufferSize) {
       buffer_.append(data);
       return Status::Ok();
@@ -143,24 +144,28 @@ class PosixWritableFile final : public WritableFile {
       buffer_.append(data);
       return Status::Ok();
     }
-    return WriteUnbuffered(data);
+    return Remember(WriteUnbuffered(data));
   }
 
-  Status Flush() override { return FlushBuffer(); }
+  Status Flush() override {
+    STRATA_RETURN_IF_ERROR(error_);
+    return FlushBuffer();
+  }
 
   // fdatasync rather than fsync: the engine's durability depends on file
   // contents and size, not on metadata such as modification time, and
   // fdatasync skips the extra metadata write.
   Status Sync() override {
+    STRATA_RETURN_IF_ERROR(error_);
     STRATA_RETURN_IF_ERROR(FlushBuffer());
     if (::fdatasync(fd_) < 0) {
-      return ErrnoStatus(path_, errno);
+      return Remember(ErrnoStatus(path_, errno));
     }
     return Status::Ok();
   }
 
   Status Close() override {
-    Status status = FlushBuffer();
+    Status status = error_.ok() ? FlushBuffer() : error_;
     if (CloseDescriptor(fd_) < 0 && status.ok()) {
       status = ErrnoStatus(path_, errno);
     }
@@ -171,10 +176,21 @@ class PosixWritableFile final : public WritableFile {
  private:
   static constexpr std::size_t kBufferSize = 64 * 1024;
 
+  // Errors are sticky (see WritableFile). After a failed write it is unknown
+  // how many bytes reached the file, and after a failed fdatasync Linux may
+  // already have dropped the dirty pages, so a later "successful" Sync would
+  // be a lie. Every call after the first failure returns that failure.
+  Status Remember(Status status) {
+    if (!status.ok() && error_.ok()) {
+      error_ = status;
+    }
+    return status;
+  }
+
   Status FlushBuffer() {
     Status status = WriteUnbuffered(buffer_);
     buffer_.clear();
-    return status;
+    return Remember(std::move(status));
   }
 
   Status WriteUnbuffered(Slice data) {
@@ -186,6 +202,10 @@ class PosixWritableFile final : public WritableFile {
         }
         return ErrnoStatus(path_, errno);
       }
+      if (wrote == 0) {
+        // POSIX permits this for a non-empty buffer; retrying would spin.
+        return Status::IoError(path_ + ": write made no progress");
+      }
       data.remove_prefix(static_cast<std::size_t>(wrote));
     }
     return Status::Ok();
@@ -194,38 +214,37 @@ class PosixWritableFile final : public WritableFile {
   std::string path_;
   int fd_;
   std::string buffer_;
+  Status error_;
 };
 
-// fcntl() record locks belong to a process, not a descriptor: a second lock on
-// the same file from the same process silently succeeds. Opening one database
-// twice in one process would then let two writers corrupt it, so the paths this
-// process has locked are also tracked here.
-class LockRegistry {
- public:
-  bool Insert(const std::string& path) {
-    const std::lock_guard<std::mutex> guard(mutex_);
-    return paths_.insert(path).second;
-  }
-
-  void Remove(const std::string& path) {
-    const std::lock_guard<std::mutex> guard(mutex_);
-    paths_.erase(path);
-  }
-
- private:
-  std::mutex mutex_;
-  std::set<std::string> paths_;
+// fcntl() record locks belong to a process, not a descriptor, which has two
+// consequences this registry exists to contain:
+//
+//   1. A second lock on the same file from the same process silently succeeds,
+//      so opening one database twice would let two writers corrupt it.
+//   2. Closing *any* descriptor for a file releases *all* of the process's locks
+//      on it. So a second LockFile must detect "already held" without ever
+//      opening the file, or it would unlock the first holder on its way out.
+//
+// Files are identified by device and inode, not by path: "db/LOCK",
+// "./db/LOCK", and a symlink to it are one file. The mutex is held across the
+// whole LockFile call so the check and the insert cannot race.
+struct LockRegistry {
+  using FileId = std::pair<dev_t, ino_t>;
+  std::mutex mutex;
+  std::set<FileId> held;
 };
 
 class PosixFileLock final : public FileLock {
  public:
-  PosixFileLock(LockRegistry* registry, std::string path, int fd)
-      : registry_(registry), path_(std::move(path)), fd_(fd) {}
+  PosixFileLock(LockRegistry* registry, LockRegistry::FileId id, int fd)
+      : registry_(registry), id_(id), fd_(fd) {}
 
   // Closing the descriptor releases the fcntl lock.
   ~PosixFileLock() override {
+    const std::lock_guard<std::mutex> guard(registry_->mutex);
     static_cast<void>(CloseDescriptor(fd_));
-    registry_->Remove(path_);
+    registry_->held.erase(id_);
   }
   PosixFileLock(const PosixFileLock&) = delete;
   PosixFileLock& operator=(const PosixFileLock&) = delete;
@@ -234,7 +253,7 @@ class PosixFileLock final : public FileLock {
 
  private:
   LockRegistry* registry_;
-  std::string path_;
+  LockRegistry::FileId id_;
   int fd_;
 };
 
@@ -272,13 +291,26 @@ class PosixEnv final : public Env {
       return ErrnoStatus(dir, errno);
     }
     std::vector<std::string> names;
-    while (const dirent* entry = ::readdir(handle)) {
+    // readdir() returns null both at the end of the directory and on failure;
+    // only errno tells them apart. Without this check a failed scan would look
+    // like a shorter listing, and recovery would conclude files do not exist.
+    int error_number = 0;
+    while (true) {
+      errno = 0;
+      const dirent* entry = ::readdir(handle);
+      if (entry == nullptr) {
+        error_number = errno;
+        break;
+      }
       const std::string_view name = entry->d_name;
       if (name != "." && name != "..") {
         names.emplace_back(name);
       }
     }
     ::closedir(handle);
+    if (error_number != 0) {
+      return ErrnoStatus(dir, error_number);
+    }
     return names;
   }
 
@@ -337,13 +369,24 @@ class PosixEnv final : public Env {
   }
 
   Result<std::unique_ptr<FileLock>> LockFile(const std::string& path) override {
-    if (!locks_.Insert(path)) {
+    const std::lock_guard<std::mutex> guard(locks_.mutex);
+
+    // Check before opening: see LockRegistry for why the file must not be
+    // opened (and so closed again) when this process already holds it.
+    struct stat existing {};
+    if (::stat(path.c_str(), &existing) == 0 &&
+        locks_.held.contains(LockRegistry::FileId{existing.st_dev, existing.st_ino})) {
       return Status::Busy(path + ": already locked by this process");
     }
+
     const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     if (fd < 0) {
+      return ErrnoStatus(path, errno);
+    }
+    struct stat info {};
+    if (::fstat(fd, &info) != 0) {
       const int error_number = errno;
-      locks_.Remove(path);
+      static_cast<void>(CloseDescriptor(fd));
       return ErrnoStatus(path, error_number);
     }
 
@@ -355,13 +398,14 @@ class PosixEnv final : public Env {
     if (::fcntl(fd, F_SETLK, &request) != 0) {
       const int error_number = errno;
       static_cast<void>(CloseDescriptor(fd));
-      locks_.Remove(path);
       if (error_number == EACCES || error_number == EAGAIN) {
         return Status::Busy(path + ": locked by another process");
       }
       return ErrnoStatus(path, error_number);
     }
-    return std::unique_ptr<FileLock>(std::make_unique<PosixFileLock>(&locks_, path, fd));
+    const LockRegistry::FileId id{info.st_dev, info.st_ino};
+    locks_.held.insert(id);
+    return std::unique_ptr<FileLock>(std::make_unique<PosixFileLock>(&locks_, id, fd));
   }
 
   std::uint64_t NowMicros() override {

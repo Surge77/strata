@@ -287,6 +287,45 @@ TEST(PosixEnv, LockExcludesOtherProcessesUntilReleased) {
   EXPECT_EQ(ChildTryLock(path), 0) << "lock was not released";
 }
 
+// The same file reached through a different spelling of its path, or through
+// a symlink, is still the same lock. The failed attempt must also leave the
+// original lock held: closing any descriptor for a file drops every fcntl lock
+// this process holds on it, so a careless "already locked" path unlocks.
+TEST(PosixEnv, LockIsKeyedOnTheFileNotThePathSpelling) {
+  const TestDir dir("env-lock-alias");
+  const std::string path = dir.File("LOCK");
+  auto lock = env()->LockFile(path);
+  ASSERT_TRUE(lock.ok());
+
+  EXPECT_TRUE(env()->LockFile(dir.path() + "/./LOCK").status().IsBusy());
+  ASSERT_EQ(::symlink(path.c_str(), dir.File("alias").c_str()), 0);
+  EXPECT_TRUE(env()->LockFile(dir.File("alias")).status().IsBusy());
+
+  EXPECT_EQ(ChildTryLock(path), 1) << "a rejected LockFile released the real lock";
+}
+
+// Once a write fails the file is poisoned: /dev/full fails every write with
+// ENOSPC, and later calls must keep failing rather than report success.
+TEST(PosixEnv, WriteErrorsAreSticky) {
+  auto file = env()->NewAppendableFile("/dev/full");
+  ASSERT_TRUE(file.ok()) << file.status().ToString();
+  ASSERT_TRUE((*file)->Append("buffered").ok());  // still only in user space
+  const strata::Status failed = (*file)->Flush();
+  ASSERT_TRUE(failed.IsIoError()) << failed.ToString();
+  EXPECT_TRUE((*file)->Append("more").IsIoError());
+  EXPECT_TRUE((*file)->Flush().IsIoError());
+  EXPECT_TRUE((*file)->Sync().IsIoError());
+  EXPECT_TRUE((*file)->Close().IsIoError());
+}
+
+TEST(PosixEnv, LargeAppendErrorsAreSticky) {
+  auto file = env()->NewAppendableFile("/dev/full");
+  ASSERT_TRUE(file.ok());
+  const std::string large(128 * 1024, 'x');  // bypasses the buffer
+  EXPECT_TRUE((*file)->Append(large).IsIoError());
+  EXPECT_TRUE((*file)->Append("x").IsIoError());
+}
+
 TEST(PosixEnv, NowMicrosIsMonotonic) {
   const std::uint64_t first = env()->NowMicros();
   const std::uint64_t second = env()->NowMicros();
