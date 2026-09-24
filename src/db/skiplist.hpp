@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <type_traits>
 
 #include "util/arena.hpp"
 #include "util/random.hpp"
@@ -33,6 +34,13 @@ namespace strata {
 // into arena memory as its Key, so copying one is cheap.
 template <typename Key, class Comparator>
 class SkipList {
+  // Nodes live in Arena memory, which is freed wholesale without running
+  // destructors, and is aligned only to max_align_t.
+  static_assert(std::is_trivially_destructible_v<Key>,
+                "SkipList never destroys keys; Key must be trivially destructible");
+  static_assert(alignof(Key) <= alignof(std::max_align_t),
+                "Arena memory is only aligned to max_align_t");
+
  public:
   // `arena` must outlive the list.
   SkipList(Comparator compare, Arena* arena)
