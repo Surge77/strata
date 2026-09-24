@@ -1,6 +1,7 @@
 #include "util/coding.hpp"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -112,24 +113,24 @@ bool GetVarint64(Slice* input, std::uint64_t* value) noexcept {
 }
 
 void PutLengthPrefixedSlice(std::string* destination, Slice value) {
-  PutVarint64(destination, value.size());
+  // Callers bound sizes at the API boundary (the DB rejects keys and values of
+  // 4 GiB or more), so this cast can only truncate on a programming error.
+  assert(value.size() <= UINT32_MAX && "length-prefixed slice longer than 2^32 - 1");
+  PutVarint32(destination, static_cast<std::uint32_t>(value.size()));
   destination->append(value.data(), value.size());
 }
 
 bool GetLengthPrefixedSlice(Slice* input, Slice* value) noexcept {
   Slice cursor = *input;
-  std::uint64_t length = 0;
-  if (!GetVarint64(&cursor, &length)) {
+  std::uint32_t length = 0;
+  if (!GetVarint32(&cursor, &length)) {
     return false;
   }
-  // Compared as uint64 before any narrowing, so a length near 2^64 cannot wrap
-  // into something that looks satisfiable.
   if (length > cursor.size()) {
     return false;
   }
-  const auto size = static_cast<std::size_t>(length);
-  *value = cursor.substr(0, size);
-  cursor.remove_prefix(size);
+  *value = cursor.substr(0, length);
+  cursor.remove_prefix(length);
   *input = cursor;
   return true;
 }
