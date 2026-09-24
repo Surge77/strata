@@ -5,6 +5,7 @@ add_library(strata STATIC
     util/coding.cpp
     util/crc32c.cpp
     util/env_posix.cpp
+    util/histogram.cpp
     util/logger.cpp
     util/status.cpp
     version.cpp)
