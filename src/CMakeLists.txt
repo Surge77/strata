@@ -12,6 +12,8 @@ add_library(strata STATIC
     table/block.cpp
     table/block_builder.cpp
     table/format.cpp
+    table/table.cpp
+    table/table_builder.cpp
     util/arena.cpp
     util/coding.cpp
     util/comparator.cpp
