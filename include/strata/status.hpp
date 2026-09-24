@@ -54,6 +54,7 @@ class [[nodiscard]] Status {
   [[nodiscard]] bool ok() const noexcept { return code_ == Code::kOk; }
   [[nodiscard]] bool IsNotFound() const noexcept { return code_ == Code::kNotFound; }
   [[nodiscard]] bool IsCorruption() const noexcept { return code_ == Code::kCorruption; }
+  [[nodiscard]] bool IsInvalidArgument() const noexcept { return code_ == Code::kInvalidArgument; }
   [[nodiscard]] bool IsIoError() const noexcept { return code_ == Code::kIoError; }
   [[nodiscard]] bool IsBusy() const noexcept { return code_ == Code::kBusy; }
 
