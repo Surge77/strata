@@ -9,6 +9,7 @@ add_library(strata STATIC
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp
+    table/format.cpp
     util/arena.cpp
     util/coding.cpp
     util/comparator.cpp
