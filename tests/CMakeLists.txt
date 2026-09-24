@@ -44,5 +44,6 @@ function(strata_add_test name)
 endfunction()
 
 add_subdirectory(unit)
+add_subdirectory(integration)
 add_subdirectory(crash)
 add_subdirectory(fuzz)

@@ -1,6 +1,8 @@
 # Sources are listed explicitly rather than globbed so that adding a file is a
 # reviewable change and CMake never silently misses one after a rebase.
 add_library(strata STATIC
+    db/db.cpp
+    db/db_impl.cpp
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp
