@@ -1,6 +1,13 @@
 # Sources are listed explicitly rather than globbed so that adding a file is a
 # reviewable change and CMake never silently misses one after a rebase.
 add_library(strata STATIC
+    util/arena.cpp
+    util/coding.cpp
+    util/crc32c.cpp
+    util/env_posix.cpp
+    util/histogram.cpp
+    util/logger.cpp
+    util/status.cpp
     version.cpp)
 
 add_library(strata::strata ALIAS strata)

@@ -20,6 +20,7 @@ function(strata_add_test name)
   add_executable(${name} ${ARG_SOURCES})
   target_link_libraries(${name} PRIVATE strata strata_warnings GTest::gtest_main)
   target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/src
+                                             ${PROJECT_SOURCE_DIR}/tests
                                              ${CMAKE_CURRENT_SOURCE_DIR})
 
   # Set before discovery so gtest_discover_tests both enumerates and runs the
