@@ -10,6 +10,7 @@
 
 #include <csignal>
 #include <cstdint>
+#include <map>
 #include <random>
 #include <string>
 
@@ -37,15 +38,33 @@ std::string Value(std::uint32_t index) {
   return "value-" + std::to_string(index * 7919U);
 }
 
-// The child writes keys forever, reporting each acknowledged index through a
-// pipe the moment Put returns Ok. It never closes the DB: it is killed.
+// Operation i of the SIGKILL workload, a pure function of i so the parent can
+// recompute exactly what the child did. Keys repeat (64 of them) and a quarter
+// of operations are deletes, so a replay-order or sequence-number bug changes
+// an observable value instead of passing unnoticed.
+struct Op {
+  std::string key;
+  bool is_delete;
+  std::string value;
+};
+
+Op OpAt(std::uint32_t index) {
+  const std::uint32_t mixed = index * 2654435761U;
+  return {"key-" + std::to_string(mixed % 64U), (mixed >> 8U) % 4U == 0,
+          "v" + std::to_string(index)};
+}
+
+// The child applies operations forever, reporting each index through a pipe
+// the moment the call returns Ok. It never closes the DB: it is killed.
 [[noreturn]] void RunWriterChild(const std::string& path, int report_fd, std::uint32_t start) {
   DB db;
   if (!DB::Open({.path = path}, &db).ok()) {
     ::_exit(3);
   }
   for (std::uint32_t index = start;; ++index) {
-    if (!db.Put(Key(index), Value(index)).ok()) {
+    const Op op = OpAt(index);
+    const Status status = op.is_delete ? db.Delete(op.key) : db.Put(op.key, op.value);
+    if (!status.ok()) {
       ::_exit(4);
     }
     if (::write(report_fd, &index, sizeof(index)) != sizeof(index)) {
@@ -54,12 +73,15 @@ std::string Value(std::uint32_t index) {
   }
 }
 
-// put -> kill -9 -> reopen -> get, at a random moment, several times over
-// the same database so recovery also replays logs left by earlier kills.
+// put/delete -> kill -9 -> reopen -> get, at random moments, five times over
+// one database so recovery also replays (and consolidates) what earlier kills
+// left. Every acknowledged operation must be reflected; the single operation
+// in flight when the signal landed may or may not be.
 TEST(DBCrash, SigkillNeverLosesAnAcknowledgedWrite) {
   const TestDir dir("db-sigkill");
   const std::string path = dir.File("db");
   std::mt19937 random(31337);
+  std::map<std::string, std::string> model;  // state after every acknowledged op
   std::uint32_t next_index = 0;
 
   for (int round = 0; round < 5; ++round) {
@@ -73,39 +95,56 @@ TEST(DBCrash, SigkillNeverLosesAnAcknowledgedWrite) {
     }
     ::close(fds[1]);
 
-    // Let the child acknowledge a random number of writes, then kill it
-    // mid-stream -- possibly in the middle of a Put.
     const std::uint32_t kill_after = 200 + static_cast<std::uint32_t>(random() % 2000);
-    std::uint32_t acknowledged_up_to = next_index;
-    bool any = false;
     std::uint32_t reported = 0;
-    std::uint32_t seen = 0;
-    while (seen < kill_after && ::read(fds[0], &reported, sizeof(reported)) == sizeof(reported)) {
-      acknowledged_up_to = reported;
-      any = true;
-      ++seen;
+    std::uint32_t acknowledged = 0;
+    while (acknowledged < kill_after &&
+           ::read(fds[0], &reported, sizeof(reported)) == sizeof(reported)) {
+      ++acknowledged;
     }
     ASSERT_EQ(::kill(child, SIGKILL), 0);
-    // Drain acknowledgements the child sent before the signal landed.
     while (::read(fds[0], &reported, sizeof(reported)) == sizeof(reported)) {
-      acknowledged_up_to = reported;
-      any = true;
+      ++acknowledged;  // sent before the signal landed
     }
     ::close(fds[0]);
     int wait_status = 0;
     ASSERT_EQ(::waitpid(child, &wait_status, 0), child);
     ASSERT_TRUE(WIFSIGNALED(wait_status)) << "child exited on its own: " << wait_status;
-    ASSERT_TRUE(any) << "child acknowledged nothing";
+    ASSERT_GT(acknowledged, 0U);
+
+    // Operations next_index .. last_acked were acknowledged; last_acked + 1 was
+    // possibly in flight.
+    const std::uint32_t last_acked = next_index + acknowledged - 1;
+    for (std::uint32_t index = next_index; index <= last_acked; ++index) {
+      const Op op = OpAt(index);
+      if (op.is_delete) {
+        model.erase(op.key);
+      } else {
+        model[op.key] = op.value;
+      }
+    }
+    const Op in_flight = OpAt(last_acked + 1);
 
     DB db;
     const Status opened = DB::Open({.path = path}, &db);
     ASSERT_TRUE(opened.ok()) << "round " << round << ": " << opened.ToString();
-    for (std::uint32_t index = 0; index <= acknowledged_up_to; ++index) {
-      auto value = db.Get(Key(index));
-      ASSERT_TRUE(value.ok()) << "round " << round << ": acknowledged key " << index << " lost";
-      ASSERT_EQ(*value, Value(index));
+    for (std::uint32_t k = 0; k < 64; ++k) {
+      const std::string key = "key-" + std::to_string(k);
+      auto actual = db.Get(key);
+      const std::string got = actual.ok() ? *actual : "<absent>";
+      const auto expected_it = model.find(key);
+      const std::string expected = expected_it == model.end() ? "<absent>" : expected_it->second;
+      if (got == expected) {
+        continue;
+      }
+      // Only the in-flight operation may explain a difference.
+      const std::string if_applied = in_flight.is_delete ? "<absent>" : in_flight.value;
+      ASSERT_TRUE(key == in_flight.key && got == if_applied)
+          << "round " << round << ": " << key << " is " << got << ", expected " << expected;
     }
-    next_index = acknowledged_up_to + 1;
+    // Replaying the in-flight operation next round makes the state
+    // deterministic again (puts and deletes are idempotent).
+    next_index = last_acked + 1;
   }
 }
 
@@ -149,6 +188,75 @@ TEST_F(DBPowerLoss, SyncedWritesSurviveAcrossRepeatedOutages) {
     }
     ASSERT_TRUE(reopened.Close().ok());
   }
+}
+
+// Recovery must not leave a state that is not a prefix of what was
+// acknowledged. Here a delete is acknowledged without sync, the process dies
+// (the delete is still in the page cache), the database reopens and sees it,
+// and a later synced write is followed by power loss. Replaying that old log
+// from the page cache is fine only if recovery makes it durable before newer
+// synced writes can depend on it; otherwise the power loss would resurrect the
+// deleted key while keeping the newer write.
+TEST_F(DBPowerLoss, RecoveryNeverResurrectsAWriteBehindANewerSyncedOne) {
+  {
+    DB db;
+    Open(&db);
+    ASSERT_TRUE(db.Put("k", "v", WriteOptions{.sync = true}).ok());
+    ASSERT_TRUE(db.Delete("k").ok());  // acknowledged, not synced
+    env_.SetFilesystemActive(false);   // the process dies; no power loss
+    static_cast<void>(db.Close());
+    env_.SetFilesystemActive(true);
+  }
+  DB reopened;
+  Open(&reopened);
+  ASSERT_TRUE(reopened.Get("k").status().IsNotFound()) << "the delete was replayed";
+  ASSERT_TRUE(reopened.Put("j", "newer", WriteOptions{.sync = true}).ok());
+  CrashAndReboot(&reopened);
+
+  DB final;
+  Open(&final);
+  EXPECT_EQ(*final.Get("j"), "newer");
+  EXPECT_TRUE(final.Get("k").status().IsNotFound()) << "k was resurrected under a newer write";
+}
+
+// Open consolidates the recovered logs into a new one and deletes the old
+// ones. If the copy were not synced before the deletions became durable, a
+// power loss straight after Open would lose the entire database.
+TEST_F(DBPowerLoss, DataSurvivesPowerLossRightAfterRecovery) {
+  {
+    DB db;
+    Open(&db);
+    for (std::uint32_t index = 0; index < 100; ++index) {
+      ASSERT_TRUE(db.Put(Key(index), Value(index)).ok());
+    }
+    ASSERT_TRUE(db.Close().ok());  // a clean close syncs the log
+  }
+  DB recovered;
+  Open(&recovered);  // replays, consolidates, deletes the old log
+  CrashAndReboot(&recovered);
+
+  DB final;
+  Open(&final);
+  for (std::uint32_t index = 0; index < 100; ++index) {
+    auto value = final.Get(Key(index));
+    ASSERT_TRUE(value.ok()) << "key " << index << " lost after recovery + power loss";
+    ASSERT_EQ(*value, Value(index));
+  }
+}
+
+// A clean Close makes every write durable, even ones written with
+// sync = false (ADR-0005, as amended by the phase-3 review).
+TEST_F(DBPowerLoss, CleanCloseMakesUnsyncedWritesDurable) {
+  {
+    DB db;
+    Open(&db);
+    ASSERT_TRUE(db.Put("unsynced", "but closed cleanly").ok());
+    ASSERT_TRUE(db.Close().ok());
+  }
+  ASSERT_TRUE(env_.SimulatePowerLoss().ok());
+  DB reopened;
+  Open(&reopened);
+  EXPECT_EQ(*reopened.Get("unsynced"), "but closed cleanly");
 }
 
 // The durability guarantee needs the WAL's *name* to be durable, not just its
