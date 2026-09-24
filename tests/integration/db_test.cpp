@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "db/db_impl.hpp"
 #include "db/filename.hpp"
 #include "db/write_batch_internal.hpp"
 #include "log/log_writer.hpp"
@@ -141,7 +142,7 @@ TEST_F(DBTest, ManyReopensKeepEverything) {
   for (const auto& [key, value] : model) {
     ASSERT_EQ(Get(key), value) << key;
   }
-  EXPECT_EQ(LogFiles().size(), 11U) << "phase 3 keeps every log until flush exists";
+  EXPECT_EQ(LogFiles().size(), 1U) << "recovery consolidates every log into one";
 }
 
 // Differential test against std::map: random puts, deletes, and batches, with
@@ -251,13 +252,45 @@ TEST_F(DBTest, OversizedKeysAndValuesAreRejected) {
   EXPECT_EQ(Get("still"), "works");
 }
 
-TEST_F(DBTest, WritesTheInfoLogAndKeepsThePreviousOne) {
+// The info log is appended to, never rotated: rotating on every open would
+// lose the log of a crashed session after two failed reopen attempts.
+TEST_F(DBTest, InfoLogAccumulatesAcrossSessions) {
   Open();
   Reopen();
-  EXPECT_TRUE(std::filesystem::exists(dir_.File("db/LOG")));
-  EXPECT_TRUE(std::filesystem::exists(dir_.File("db/LOG.old")));
+  EXPECT_FALSE(std::filesystem::exists(dir_.File("db/LOG.old")));
   const std::string contents = strata::test::ReadFileToString(dir_.File("db/LOG"));
-  EXPECT_NE(contents.find("replayed"), std::string::npos) << contents;
+  std::size_t banners = 0;
+  for (std::size_t at = contents.find("=== opening"); at != std::string::npos;
+       at = contents.find("=== opening", at + 1)) {
+    ++banners;
+  }
+  EXPECT_EQ(banners, 2U) << contents;
+  EXPECT_NE(contents.find("consolidated"), std::string::npos) << contents;
+}
+
+// Rejecting an existing database must leave it exactly as it was.
+TEST_F(DBTest, ErrorIfExistsWritesNothing) {
+  Open();
+  ASSERT_TRUE(db_.Close().ok());
+  const std::string log_before = strata::test::ReadFileToString(dir_.File("db/LOG"));
+  Options options = DefaultOptions();
+  options.error_if_exists = true;
+  ASSERT_EQ(DB::Open(options, &db_).code(), Status::Code::kAlreadyExists);
+  EXPECT_EQ(strata::test::ReadFileToString(dir_.File("db/LOG")), log_before);
+}
+
+// A file numbered UINT64_MAX would make the next file number wrap to 0.
+TEST_F(DBTest, ExhaustedFileNumbersRefuseToOpen) {
+  ASSERT_TRUE(std::filesystem::create_directories(dir_.File("db")));
+  std::ofstream(dir_.File("db/18446744073709551615.log")) << "";
+  EXPECT_TRUE(DB::Open(DefaultOptions(), &db_).IsCorruption());
+}
+
+// Overwrites a byte of the only log file.
+void DamageLog(const std::filesystem::path& log, std::streamoff offset) {
+  std::fstream file(log, std::ios::in | std::ios::out | std::ios::binary);
+  file.seekp(offset);
+  file.put('\x7f');
 }
 
 // A torn record at the end of the WAL is what a crash leaves behind: recovery
@@ -267,54 +300,138 @@ TEST_F(DBTest, TornTailIsDiscardedSilently) {
   ASSERT_TRUE(db_.Put("kept", "yes").ok());
   ASSERT_TRUE(db_.Put("torn", std::string(1000, 't')).ok());
   ASSERT_TRUE(db_.Close().ok());
-  // One Open, one log: a fresh log is only created by the next Open.
   const auto logs = LogFiles();
   ASSERT_EQ(logs.size(), 1U);
-  const auto& last_with_data = logs.front();
-  std::filesystem::resize_file(last_with_data, std::filesystem::file_size(last_with_data) - 10);
+  std::filesystem::resize_file(logs.front(), std::filesystem::file_size(logs.front()) - 10);
   Open();
   EXPECT_EQ(Get("kept"), "yes");
   EXPECT_EQ(Get("torn"), "NOT_FOUND");
 }
 
-// Damage in the middle of the WAL fails Open by default (ADR-0005)...
-TEST_F(DBTest, CorruptionInsideTheLogFailsOpen) {
+// After power loss with sync = false, the start of a record can survive while
+// the next block reads back as zeros. With nothing valid after it, that is a
+// torn write -- and after recovery consolidates, a strict reopen must work too.
+TEST_F(DBTest, ZeroFilledTailOfTheNewestLogIsATornWrite) {
   Open();
-  ASSERT_TRUE(db_.Put("first", "1").ok());
-  ASSERT_TRUE(db_.Put("second", "2").ok());
+  ASSERT_TRUE(db_.Put("kept", "yes").ok());
+  ASSERT_TRUE(db_.Put("spans-blocks", std::string(40000, 's')).ok());
   ASSERT_TRUE(db_.Close().ok());
   const auto logs = LogFiles();
   ASSERT_EQ(logs.size(), 1U);
-  {
-    std::fstream file(logs.front(), std::ios::in | std::ios::out | std::ios::binary);
-    file.seekp(12);  // inside the first record's payload
-    file.put('\x7f');
-  }
+  // Keep the first block (with the record's first fragment); zero the rest.
+  std::filesystem::resize_file(logs.front(), 32768);
+  std::filesystem::resize_file(logs.front(), 32768 * 2);
+  Open();
+  EXPECT_EQ(Get("kept"), "yes");
+  EXPECT_EQ(Get("spans-blocks"), "NOT_FOUND");
+  Reopen();
+  EXPECT_EQ(Get("kept"), "yes") << "strict reopen after tail handling";
+}
+
+// Damage followed by valid records is not a torn write: it fails Open by
+// default (ADR-0005), naming the file.
+TEST_F(DBTest, DamageFollowedByValidRecordsFailsOpen) {
+  Open();
+  ASSERT_TRUE(db_.Put("damaged", "1").ok());
+  ASSERT_TRUE(db_.Put("filler", std::string(40000, 'f')).ok());  // pushes on to block 2
+  ASSERT_TRUE(db_.Put("later", "2").ok());
+  ASSERT_TRUE(db_.Close().ok());
+  const auto logs = LogFiles();
+  ASSERT_EQ(logs.size(), 1U);
+  DamageLog(logs.front(), 12);  // inside the first record
   const Status status = DB::Open(DefaultOptions(), &db_);
   EXPECT_TRUE(status.IsCorruption()) << status.ToString();
   EXPECT_NE(status.message().find(".log"), Slice::npos) << "the error must name the file";
   EXPECT_FALSE(db_.is_open());
 }
 
-// ...and salvage mode opens anyway, dropping the damaged block.
-TEST_F(DBTest, IgnoreWalCorruptionSalvagesTheRest) {
+// Salvage mode opens anyway, dropping the damaged block. Recovery then
+// consolidates, so the damage is gone for good: a strict reopen works, and new
+// writes can never collide with sequence numbers of the dropped batch.
+TEST_F(DBTest, SalvagedDatabaseReopensStrictlyAndKeepsNewWrites) {
   Open();
   ASSERT_TRUE(db_.Put("damaged", "1").ok());
+  ASSERT_TRUE(db_.Put("filler", std::string(40000, 'f')).ok());
+  ASSERT_TRUE(db_.Put("later", "2").ok());
   ASSERT_TRUE(db_.Close().ok());
-  Open();
-  ASSERT_TRUE(db_.Put("later", "2").ok());  // in the next log file
-  ASSERT_TRUE(db_.Close().ok());
-  const auto logs = LogFiles();
-  {
-    std::fstream file(logs[0], std::ios::in | std::ios::out | std::ios::binary);
-    file.seekp(12);
-    file.put('\x7f');
-  }
-  Options options = DefaultOptions();
-  options.ignore_wal_corruption = true;
-  Open(options);
+  DamageLog(LogFiles().front(), 12);
+
+  Options salvage = DefaultOptions();
+  salvage.ignore_wal_corruption = true;
+  Open(salvage);
   EXPECT_EQ(Get("damaged"), "NOT_FOUND");
   EXPECT_EQ(Get("later"), "2");
+  ASSERT_TRUE(db_.Put("damaged", "rewritten").ok());
+  ASSERT_TRUE(db_.Close().ok());
+
+  Open();  // strict
+  EXPECT_EQ(Get("damaged"), "rewritten");
+  EXPECT_EQ(Get("later"), "2");
+  EXPECT_EQ(LogFiles().size(), 1U);
+}
+
+// Writes hand-built WAL files, for testing recovery rules directly.
+class HandWrittenLogs : public DBTest {
+ protected:
+  void WriteLog(std::uint64_t number, const std::vector<WriteBatch>& batches) {
+    std::filesystem::create_directories(dir_.File("db"));
+    auto file =
+        strata::Env::Default()->NewWritableFile(strata::LogFileName(dir_.File("db"), number));
+    ASSERT_TRUE(file.ok());
+    strata::log::Writer writer(file->get());
+    for (const WriteBatch& batch : batches) {
+      ASSERT_TRUE(writer.AddRecord(strata::WriteBatchInternal::Contents(batch)).ok());
+    }
+    ASSERT_TRUE((*file)->Close().ok());
+  }
+
+  static WriteBatch Batch(strata::SequenceNumber sequence, std::string_view key,
+                          std::string_view value) {
+    WriteBatch batch;
+    batch.Put(key, value);
+    strata::WriteBatchInternal::SetSequence(&batch, sequence);
+    return batch;
+  }
+};
+
+// A consolidation that crashed after writing its copy but before deleting the
+// logs it copied leaves every batch twice. Replay must apply each once.
+TEST_F(HandWrittenLogs, DuplicatesFromAnInterruptedConsolidationAreSkipped) {
+  WriteLog(1, {Batch(1, "a", "1"), Batch(2, "b", "2"), Batch(3, "a", "3")});
+  WriteLog(2, {Batch(1, "a", "1"), Batch(2, "b", "2"), Batch(3, "a", "3"), Batch(4, "c", "4")});
+  Open();
+  EXPECT_EQ(Get("a"), "3");
+  EXPECT_EQ(Get("b"), "2");
+  EXPECT_EQ(Get("c"), "4");
+  ASSERT_TRUE(db_.Put("d", "5").ok());
+  Reopen();
+  EXPECT_EQ(Get("d"), "5") << "new writes must be numbered after the recovered ones";
+}
+
+// A batch that straddles already-recovered sequence numbers is not a
+// duplicate; it is corruption.
+TEST_F(HandWrittenLogs, PartiallyOverlappingBatchesAreCorruption) {
+  WriteLog(1, {Batch(1, "a", "1"), Batch(2, "b", "2")});
+  WriteBatch straddling;
+  straddling.Put("x", "1");
+  straddling.Put("y", "2");
+  strata::WriteBatchInternal::SetSequence(&straddling, 2);  // covers 2..3
+  WriteLog(2, {straddling, Batch(4, "z", "4")});
+  EXPECT_TRUE(DB::Open(DefaultOptions(), &db_).IsCorruption());
+}
+
+// A thread that was already waiting on the mutex when Close ran must get an
+// error, not a null log. Exercised on DBImpl directly, since DB::Close also
+// drops the handle.
+TEST_F(DBTest, CallsAfterCloseAreRefusedByTheEngine) {
+  auto impl = strata::DBImpl::Open(DefaultOptions());
+  ASSERT_TRUE(impl.ok()) << impl.status().ToString();
+  ASSERT_TRUE((*impl)->Close().ok());
+  WriteBatch batch;
+  batch.Put("k", "v");
+  EXPECT_TRUE((*impl)->Write({}, batch).IsInvalidArgument());
+  EXPECT_TRUE((*impl)->Get({}, "k").status().IsInvalidArgument());
+  EXPECT_TRUE((*impl)->Close().ok()) << "a second Close is a no-op";
 }
 
 // A log record can pass its checksum and still not be a WriteBatch -- a bug

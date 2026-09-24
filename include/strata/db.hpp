@@ -23,8 +23,12 @@ class DBImpl;
 //   db.Delete("user:101");
 //
 // A DB is a move-only handle. Default-constructed or moved-from, it is closed,
-// and every operation on it returns InvalidArgument. All operations are safe to
-// call from multiple threads at once.
+// and every operation on it returns InvalidArgument.
+//
+// Put, Delete, Write, and Get are safe to call from many threads at once.
+// Close, destruction, and move-assignment are not: like destroying any C++
+// object, they must not race with other calls on the same DB. (The engine
+// still refuses cleanly if a call was already waiting when Close finished.)
 //
 // What a successful write guarantees -- process crash versus power loss -- is
 // set by WriteOptions::sync; see docs/durability.md.
@@ -58,9 +62,10 @@ class DB {
   // The value of `key`, or NotFound if it is absent or deleted.
   [[nodiscard]] Result<std::string> Get(Slice key, const ReadOptions& options = {}) const;
 
-  // Releases the database. Pending writes were already flushed to the
-  // operating system when they returned; Close additionally releases the LOCK
-  // so another process can open the database. Closing a closed DB is a no-op.
+  // Syncs the write-ahead log -- so after a successful Close every write is
+  // durable against power loss, whatever its WriteOptions -- then releases
+  // the LOCK so another process can open the database. Closing a closed DB is
+  // a no-op.
   Status Close();
 
  private:

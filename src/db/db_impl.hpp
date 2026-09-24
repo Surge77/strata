@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "db/dbformat.hpp"
 #include "db/memtable.hpp"
@@ -21,11 +22,12 @@ namespace strata {
 
 // The engine behind strata::DB.
 //
-// Phase 3 scope: everything lives in one memtable, and the write-ahead logs
-// are the only durable copy of the data -- every log is replayed on Open and
-// kept until phase 5 adds flushing to SSTables. Concurrency is one mutex around
-// every operation: correct, deliberately simple, and made fast in phase 9
-// (ADR-0004).
+// Phase 3 scope: everything lives in one memtable, and the write-ahead log is
+// the only durable copy of the data. Open replays every log and then
+// consolidates them into one fresh, synced log (see ConsolidateRecoveredLogs);
+// phase 5 replaces that with flushing to SSTables. Concurrency is one mutex
+// around every operation: correct, deliberately simple, and made fast in phase
+// 9 (ADR-0004).
 class DBImpl {
  public:
   static Result<std::unique_ptr<DBImpl>> Open(const Options& options);
@@ -47,7 +49,11 @@ class DBImpl {
   explicit DBImpl(const Options& options);
 
   Status OpenDatabase();
-  Status RecoverLogFile(std::uint64_t number, SequenceNumber* max_sequence);
+  // `newest` enables torn-tail handling for damage at the very end of the log.
+  Status RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber* max_sequence);
+  // Rewrites everything recovered into the current (new) log, syncs it, then
+  // deletes `old_logs`.
+  Status ConsolidateRecoveredLogs(const std::vector<std::uint64_t>& old_logs);
   Status NewLogFile();
 
   const Options options_;
@@ -71,6 +77,9 @@ class DBImpl {
   // with it: the log may now hold a partial record, so appending more would
   // put acknowledged writes after a gap recovery would stop at.
   Status background_error_;
+  // Set by Close. A thread that was already waiting for the mutex when another
+  // thread closed the database gets InvalidArgument instead of a null log.
+  bool closed_ = false;
 };
 
 }  // namespace strata
