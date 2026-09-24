@@ -1,17 +1,21 @@
 // stratactl -- administration and inspection CLI for a strata database.
 //
 // Every phase adds the command that makes its feature demonstrable from a
-// terminal (see docs/roadmap.md). Phase 3: put, get, delete.
+// terminal (see docs/roadmap.md). Phase 3: put, get, delete. Phase 4: dump-sst.
 //
 // Exit codes: 0 success, 1 key not found, 2 usage error, 3 database error.
 
 #include "strata/db.hpp"
+#include "strata/env.hpp"
 #include "strata/version.hpp"
 
 #include <iostream>
 #include <span>
 #include <string>
 #include <string_view>
+
+#include "db/dbformat.hpp"
+#include "table/table.hpp"
 
 namespace {
 
@@ -45,6 +49,59 @@ bool OpenDb(const std::string& path, strata::DB* db, int* exit_code) {
     return false;
   }
   return true;
+}
+
+// Printable rendering of arbitrary bytes: printable ASCII as-is, else \xNN.
+std::string Escape(strata::Slice bytes) {
+  constexpr std::string_view kHex = "0123456789abcdef";
+  std::string out;
+  for (const char c : bytes) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte >= 0x20 && byte < 0x7F && byte != '\\') {
+      out.push_back(c);
+    } else {
+      out += "\\x";
+      out.push_back(kHex[byte >> 4U]);
+      out.push_back(kHex[byte & 0xFU]);
+    }
+  }
+  return out;
+}
+
+int DumpSst(const std::string& path) {
+  strata::Env* env = strata::Env::Default();
+  auto size = env->GetFileSize(path);
+  if (!size.ok()) {
+    return Fail(size.status());
+  }
+  auto file = env->NewRandomAccessFile(path);
+  if (!file.ok()) {
+    return Fail(file.status());
+  }
+  static const strata::InternalKeyComparator kComparator(strata::BytewiseComparator());
+  auto table =
+      strata::table::Table::Open({.comparator = &kComparator}, std::move(file).value(), *size);
+  if (!table.ok()) {
+    return Fail(table.status());
+  }
+  auto it = (*table)->NewIterator();
+  std::uint64_t count = 0;
+  for (it->SeekToFirst(); it->Valid(); it->Next(), ++count) {
+    strata::ParsedInternalKey parsed;
+    if (!strata::ParseInternalKey(it->key(), &parsed)) {
+      std::cout << "'" << Escape(it->key()) << "' => '" << Escape(it->value()) << "'\n";
+    } else if (parsed.type == strata::ValueType::kDeletion) {
+      std::cout << "'" << Escape(parsed.user_key) << "' @ " << parsed.sequence << " DEL\n";
+    } else {
+      std::cout << "'" << Escape(parsed.user_key) << "' @ " << parsed.sequence << " PUT => '"
+                << Escape(it->value()) << "'\n";
+    }
+  }
+  if (!it->status().ok()) {
+    return Fail(it->status());
+  }
+  std::cout << count << " entries\n";
+  return kExitOk;
 }
 
 int RunDataCommand(std::string_view command, std::span<char*> args) {
@@ -109,6 +166,13 @@ int main(int argc, char** argv) {
   if (command == "help" || command == "--help" || command == "-h") {
     PrintUsage(std::cout);
     return kExitOk;
+  }
+  if (command == "dump-sst") {
+    if (args.size() != 3) {
+      PrintUsage(std::cerr);
+      return kExitUsage;
+    }
+    return DumpSst(args[2]);
   }
   if (command == "put" || command == "get" || command == "delete") {
     return RunDataCommand(command, args.subspan(2));
