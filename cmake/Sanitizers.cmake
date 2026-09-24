@@ -30,7 +30,10 @@ if(STRATA_COVERAGE)
                            -fprofile-instr-generate -fcoverage-mapping)
     target_link_options(strata_sanitizers INTERFACE -fprofile-instr-generate)
   else()
-    target_compile_options(strata_sanitizers INTERFACE --coverage -O0 -g)
+    # Atomic counters: several tests run threads, and GCC's default non-atomic
+    # increments race, producing negative hit counts that gcovr rejects.
+    target_compile_options(strata_sanitizers INTERFACE
+                           --coverage -O0 -g -fprofile-update=atomic)
     target_link_options(strata_sanitizers INTERFACE --coverage)
   endif()
 endif()
