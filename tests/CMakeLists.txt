@@ -44,5 +44,17 @@ function(strata_add_test name)
 endfunction()
 
 add_subdirectory(unit)
+add_subdirectory(integration)
 add_subdirectory(crash)
 add_subdirectory(fuzz)
+
+# The CLI end to end: each stratactl invocation is its own process, so this also
+# exercises WAL recovery between commands.
+if(STRATA_BUILD_TOOLS)
+  # Run through the sanitizer launcher (setarch -R under TSan) like every other
+  # test; the ASLR setting is inherited by the stratactl processes it starts.
+  add_test(NAME stratactl_cli
+           COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratactl_test.sh
+                   $<TARGET_FILE:stratactl>)
+  set_tests_properties(stratactl_cli PROPERTIES LABELS integration)
+endif()

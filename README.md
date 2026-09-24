@@ -13,12 +13,13 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 2 of 15 complete: the write-ahead log.**
-> Tested and in place: the phase-1 primitives (`Slice`, `Status`/`Result<T>`, coding, CRC-32C,
-> `Arena`, the `Env` filesystem abstraction with the `LOCK` file, logger, `Histogram`), plus the
-> block-framed log writer/reader, `WriteBatch`, a power-loss simulator used by the crash tests,
-> and a fuzz harness. The `DB` API shown above is the phase 3 target. See
-> [the roadmap](docs/roadmap.md) and the [build journal](docs/journal/README.md).
+> **Status: Phase 3 of 15 complete: a working, crash-safe key-value store.**
+> `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
+> acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
+> by a clean `Close`) survives power loss. Each claim is backed by a crash test and a negative
+> control; see [docs/durability.md](docs/durability.md). All data currently lives in memory and
+> the write-ahead log; SSTables arrive in phase 4. See [the roadmap](docs/roadmap.md) and the
+> [build journal](docs/journal/README.md).
 > Nothing in this README claims a capability that is not yet implemented and tested.
 
 ---

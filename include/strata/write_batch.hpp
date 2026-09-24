@@ -21,18 +21,30 @@ namespace strata {
 // thread, then hand it to the database.
 class WriteBatch {
  public:
+  // Every length in the engine's formats is a varint32, so keys (which gain an
+  // 8-byte internal trailer) and values are limited to fit one. An operation
+  // that exceeds a limit is not recorded; it marks the batch oversized, and
+  // DB::Write rejects the whole batch with InvalidArgument. Nothing is ever
+  // silently truncated.
+  static constexpr std::size_t kMaxKeySize = 0xFFFFFFFFU - 8U;
+  static constexpr std::size_t kMaxValueSize = 0xFFFFFFFFU;
+
   WriteBatch();
 
   void Put(Slice key, Slice value);
   void Delete(Slice key);
 
-  // Removes every operation.
+  // Removes every operation (and clears the oversized mark).
   void Clear();
 
   // Adds every operation of `other` after this batch's operations.
   void Append(const WriteBatch& other);
 
   [[nodiscard]] std::uint32_t Count() const noexcept;
+
+  // True if any Put or Delete exceeded kMaxKeySize or kMaxValueSize, including
+  // one appended from another batch.
+  [[nodiscard]] bool oversized() const noexcept { return oversized_; }
 
   // Bytes the batch occupies in the WAL, header included.
   [[nodiscard]] std::size_t ApproximateSize() const noexcept { return rep_.size(); }
@@ -61,6 +73,7 @@ class WriteBatch {
   friend class WriteBatchInternal;
 
   std::string rep_;
+  bool oversized_ = false;
 };
 
 }  // namespace strata
