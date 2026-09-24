@@ -56,3 +56,4 @@ catches a different class of mistake. The roles used, and what each is for:
 |---|---|
 | 0 | foundation: predates this journal; see the phase-0 commits and ADR-0001 |
 | 1 | [primitives](phase-01-primitives.md) |
+| 2 | [log](phase-02-log.md) |
