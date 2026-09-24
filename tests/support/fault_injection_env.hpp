@@ -35,7 +35,13 @@ namespace strata::test {
 //   ... reopen and check that every synced write survived ...
 //
 // Files that existed before the FaultInjectionEnv first saw them are treated as
-// fully durable. Thread-safe.
+// fully durable.
+//
+// Thread safety: concurrent calls are safe when they touch *different* paths,
+// which is how the engine uses files (each file has exactly one owner). Two
+// threads creating, renaming, or removing the *same* path at the same time are
+// not supported: the existence check and the real operation are not atomic, so
+// the recorded undo could describe the wrong generation of the file.
 class FaultInjectionEnv final : public EnvWrapper {
  public:
   explicit FaultInjectionEnv(Env* base);
