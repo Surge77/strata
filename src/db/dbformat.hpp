@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <string>
 
+#include "util/comparator.hpp"
+
 namespace strata {
 
 // The internal key format: what the engine actually sorts and stores, as
@@ -56,13 +58,28 @@ void AppendInternalKey(std::string* result, const ParsedInternalKey& key);
   return internal_key.substr(0, internal_key.size() - kInternalKeyTrailerSize);
 }
 
-// Orders internal keys by user key ascending (bytewise), then by sequence
-// number descending, then by type descending. "Descending sequence" is what
-// makes the newest version of a key the first one a seek finds, while older
-// versions stay reachable for snapshots.
-class InternalKeyComparator {
+// Orders internal keys by user key ascending (under the user comparator), then
+// by sequence number descending, then by type descending. "Descending sequence"
+// is what makes the newest version of a key the first one a seek finds, while
+// older versions stay reachable for snapshots.
+//
+// Also shortens index keys for SSTables: separators are computed on the user
+// key part, and a shortened user key gets the largest possible trailer so it
+// still sorts before every version of the next block's first key.
+class InternalKeyComparator final : public Comparator {
  public:
-  [[nodiscard]] int Compare(Slice a, Slice b) const noexcept;
+  explicit InternalKeyComparator(const Comparator* user_comparator)
+      : user_comparator_(user_comparator) {}
+
+  [[nodiscard]] int Compare(Slice a, Slice b) const override;
+  [[nodiscard]] std::string_view Name() const override { return "strata.InternalKeyComparator"; }
+  void FindShortestSeparator(std::string* start, Slice limit) const override;
+  void FindShortSuccessor(std::string* key) const override;
+
+  [[nodiscard]] const Comparator* user_comparator() const noexcept { return user_comparator_; }
+
+ private:
+  const Comparator* user_comparator_;
 };
 
 // The key a point lookup searches for: every representation the memtable and

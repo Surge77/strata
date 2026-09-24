@@ -9,8 +9,14 @@ add_library(strata STATIC
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp
+    table/block.cpp
+    table/block_builder.cpp
+    table/format.cpp
+    table/table.cpp
+    table/table_builder.cpp
     util/arena.cpp
     util/coding.cpp
+    util/comparator.cpp
     util/crc32c.cpp
     util/env_posix.cpp
     util/histogram.cpp

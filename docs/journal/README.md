@@ -58,3 +58,4 @@ catches a different class of mistake. The roles used, and what each is for:
 | 1 | [primitives](phase-01-primitives.md) |
 | 2 | [log](phase-02-log.md) |
 | 3 | [memtable and the first database](phase-03-memtable.md) |
+| 4 | [SSTables](phase-04-sstable.md) |

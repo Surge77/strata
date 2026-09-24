@@ -29,10 +29,11 @@ Slice GetLengthPrefixed(const char* data) {
 }  // namespace
 
 int MemTable::KeyComparator::operator()(const char* a, const char* b) const {
-  return comparator.Compare(GetLengthPrefixed(a), GetLengthPrefixed(b));
+  return comparator->Compare(GetLengthPrefixed(a), GetLengthPrefixed(b));
 }
 
-MemTable::MemTable() : table_(KeyComparator{}, &arena_) {}
+MemTable::MemTable(const InternalKeyComparator* comparator)
+    : table_(KeyComparator{comparator}, &arena_) {}
 
 void MemTable::Add(SequenceNumber sequence, ValueType type, Slice user_key, Slice value) {
   const std::size_t internal_key_size = user_key.size() + kInternalKeyTrailerSize;

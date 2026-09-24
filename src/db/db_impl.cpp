@@ -164,7 +164,7 @@ Status DBImpl::OpenDatabase() {
   // Logs are numbered in creation order, so replaying them in numeric order
   // re-applies every write in the order it was acknowledged.
   std::sort(logs.begin(), logs.end());
-  mem_ = std::make_unique<MemTable>();
+  mem_ = std::make_unique<MemTable>(&internal_comparator_);
   SequenceNumber max_sequence = 0;
   for (std::size_t index = 0; index < logs.size(); ++index) {
     const bool newest = index + 1 == logs.size();

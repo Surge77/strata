@@ -18,19 +18,24 @@ using strata::SequenceNumber;
 using strata::ValueType;
 using Result = MemTable::LookupResult;
 
+const strata::InternalKeyComparator* Comparator() {
+  static const strata::InternalKeyComparator kComparator(strata::BytewiseComparator());
+  return &kComparator;
+}
+
 Result Lookup(const MemTable& table, std::string_view key, SequenceNumber sequence,
               std::string* value) {
   return table.Get(LookupKey(key, sequence), value);
 }
 
 TEST(MemTable, EmptyTableHasNothing) {
-  const MemTable table;
+  const MemTable table{Comparator()};
   std::string value;
   EXPECT_EQ(Lookup(table, "k", 100, &value), Result::kNotPresent);
 }
 
 TEST(MemTable, ReturnsTheNewestVersion) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(1, ValueType::kValue, "k", "v1");
   table.Add(2, ValueType::kValue, "k", "v2");
   table.Add(3, ValueType::kValue, "other", "x");
@@ -42,7 +47,7 @@ TEST(MemTable, ReturnsTheNewestVersion) {
 // Reading at an older sequence number sees the state as of that point: the
 // mechanism snapshots are built on.
 TEST(MemTable, ReadsAtAnOlderSequenceSeeTheOlderVersion) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(5, ValueType::kValue, "k", "at-5");
   table.Add(9, ValueType::kValue, "k", "at-9");
   std::string value;
@@ -56,7 +61,7 @@ TEST(MemTable, ReadsAtAnOlderSequenceSeeTheOlderVersion) {
 // A tombstone is not "absent": it must stop the search so older files cannot
 // resurrect the key.
 TEST(MemTable, DeletionIsReportedDistinctlyFromAbsence) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(1, ValueType::kValue, "k", "v");
   table.Add(2, ValueType::kDeletion, "k", "");
   std::string value;
@@ -70,7 +75,7 @@ TEST(MemTable, DeletionIsReportedDistinctlyFromAbsence) {
 // A key that is a prefix of another must not match it: the user key
 // comparison, not just the seek position, decides.
 TEST(MemTable, PrefixKeysAreDistinct) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(1, ValueType::kValue, "abc", "long");
   std::string value;
   EXPECT_EQ(Lookup(table, "ab", 5, &value), Result::kNotPresent);
@@ -80,7 +85,7 @@ TEST(MemTable, PrefixKeysAreDistinct) {
 // A default-constructed Slice has a null data(); the DB passes one as the value
 // of every Delete. Copying it must not hand memcpy a null pointer (UBSan).
 TEST(MemTable, AcceptsNullEmptySlices) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(1, ValueType::kDeletion, strata::Slice(), strata::Slice());
   table.Add(2, ValueType::kValue, "k", strata::Slice());
   std::string value = "unchanged";
@@ -90,7 +95,7 @@ TEST(MemTable, AcceptsNullEmptySlices) {
 }
 
 TEST(MemTable, KeysAndValuesAreBinarySafe) {
-  MemTable table;
+  MemTable table{Comparator()};
   const std::string key("a\0b", 3);
   const std::string payload(10000, '\0');
   table.Add(1, ValueType::kValue, key, payload);
@@ -103,7 +108,7 @@ TEST(MemTable, KeysAndValuesAreBinarySafe) {
 }
 
 TEST(MemTable, IteratesInInternalKeyOrder) {
-  MemTable table;
+  MemTable table{Comparator()};
   table.Add(3, ValueType::kValue, "b", "b3");
   table.Add(1, ValueType::kValue, "a", "a1");
   table.Add(4, ValueType::kDeletion, "a", "");
@@ -136,7 +141,7 @@ TEST(MemTable, IteratesInInternalKeyOrder) {
 }
 
 TEST(MemTable, MemoryUsageGrowsWithData) {
-  MemTable table;
+  MemTable table{Comparator()};
   const std::size_t empty = table.ApproximateMemoryUsage();
   for (SequenceNumber sequence = 1; sequence <= 1000; ++sequence) {
     table.Add(sequence, ValueType::kValue, "key" + std::to_string(sequence), std::string(100, 'v'));
@@ -147,7 +152,7 @@ TEST(MemTable, MemoryUsageGrowsWithData) {
 // Differential test against a model that stores every version.
 TEST(MemTable, AgreesWithAVersionedModel) {
   std::mt19937 random(11);
-  MemTable table;
+  MemTable table{Comparator()};
   std::map<std::string, std::map<SequenceNumber, std::string>> model;  // "" = tombstone
   for (SequenceNumber sequence = 1; sequence <= 3000; ++sequence) {
     const std::string key = "k" + std::to_string(random() % 200);
