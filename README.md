@@ -13,10 +13,13 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 0 of 15 — engineering foundation.**
-> The build, test, CI, and tooling skeleton are in place. The engine itself is being
-> built one phase at a time; see [the roadmap](docs/roadmap.md). Nothing in this
-> README claims a capability that is not yet implemented and tested.
+> **Status: Phase 1 of 15 complete — primitives.**
+> The engine's vocabulary types are in place and tested: `Slice`, `Status`/`Result<T>`, varint
+> coding, CRC-32C, the `Arena`, the `Env` filesystem abstraction (with the `LOCK` file), the
+> logger, and the latency `Histogram`. The storage engine itself is being built one phase at a
+> time; see [the roadmap](docs/roadmap.md) and the [build journal](docs/journal/README.md).
+> The `DB` API shown above is the phase 3 target. Nothing in this README claims a capability
+> that is not yet implemented and tested.
 
 ---
 
