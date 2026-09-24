@@ -363,6 +363,16 @@ TEST(Log, WriterIsPoisonedAfterAFailure) {
   EXPECT_TRUE(writer.AddRecord("never written").IsIoError());
 }
 
+// A failed flush leaves the record's bytes in an unknown state: poisoned too.
+TEST(Log, FlushFailurePoisonsTheWriter) {
+  std::string contents;
+  StringSink sink(&contents);
+  Writer writer(&sink);
+  sink.FailFlush();
+  EXPECT_TRUE(writer.AddRecord("unflushed").IsIoError());
+  EXPECT_TRUE(writer.AddRecord("never").IsIoError());
+}
+
 TEST(Log, PaddingFailurePoisonsTheWriter) {
   std::string contents;
   StringSink sink(&contents);

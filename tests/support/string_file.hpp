@@ -21,17 +21,22 @@ class StringSink final : public WritableFile {
     contents_->append(data);
     return Status::Ok();
   }
-  Status Flush() override { return Status::Ok(); }
+  Status Flush() override {
+    return fail_flush_ ? Status::IoError("injected flush failure") : Status::Ok();
+  }
   Status Sync() override { return Status::Ok(); }
   Status Close() override { return Status::Ok(); }
 
   // Appends that would grow the contents past `bytes` fail.
   void FailAfter(std::size_t bytes) { fail_after_ = bytes; }
 
+  void FailFlush() { fail_flush_ = true; }
+
  private:
   static constexpr std::size_t kNever = static_cast<std::size_t>(-1);
   std::string* contents_;
   std::size_t fail_after_ = kNever;
+  bool fail_flush_ = false;
 };
 
 // A SequentialFile over an in-memory string. Can be told to fail a read.
