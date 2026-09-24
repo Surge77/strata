@@ -53,19 +53,28 @@ void Histogram::Add(std::uint64_t value) noexcept {
   min_ = std::min(min_, value);
   max_ = std::max(max_, value);
   const auto as_double = static_cast<double>(value);
-  sum_ += as_double;
-  sum_of_squares_ += as_double * as_double;
+  const double delta = as_double - mean_;
+  mean_ += delta / static_cast<double>(count_);
+  squared_deviations_ += delta * (as_double - mean_);
 }
 
 void Histogram::Merge(const Histogram& other) noexcept {
   for (std::size_t bucket = 0; bucket < kBucketCount; ++bucket) {
     buckets_[bucket] += other.buckets_[bucket];
   }
+  if (other.count_ == 0) {
+    return;
+  }
+  // Chan et al.'s pairwise combination of two Welford states.
+  const auto left = static_cast<double>(count_);
+  const auto right = static_cast<double>(other.count_);
+  const double total = left + right;
+  const double delta = other.mean_ - mean_;
+  mean_ += delta * right / total;
+  squared_deviations_ += other.squared_deviations_ + delta * delta * left * right / total;
   count_ += other.count_;
   min_ = std::min(min_, other.min_);
   max_ = std::max(max_, other.max_);
-  sum_ += other.sum_;
-  sum_of_squares_ += other.sum_of_squares_;
 }
 
 void Histogram::Clear() noexcept {
@@ -73,18 +82,14 @@ void Histogram::Clear() noexcept {
 }
 
 double Histogram::Mean() const noexcept {
-  return count_ == 0 ? 0.0 : sum_ / static_cast<double>(count_);
+  return mean_;
 }
 
 double Histogram::StandardDeviation() const noexcept {
   if (count_ == 0) {
     return 0.0;
   }
-  const auto n = static_cast<double>(count_);
-  // Population variance from the running sums; clamped because rounding can
-  // leave a tiny negative value when every sample is equal.
-  const double variance = (sum_of_squares_ - (sum_ * sum_) / n) / n;
-  return std::sqrt(std::max(variance, 0.0));
+  return std::sqrt(squared_deviations_ / static_cast<double>(count_));
 }
 
 double Histogram::Percentile(double percent) const noexcept {

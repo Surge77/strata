@@ -14,8 +14,9 @@ namespace strata {
 // power-of-two range above that is split into 16 equal sub-buckets. The
 // relative width of any bucket is therefore at most 1/16, so a percentile
 // read from it is within 6.25% of the true sample value -- at 3 microseconds
-// or at 3 seconds alike. Count, sum, min, max, mean, and standard deviation are
-// kept exactly.
+// or at 3 seconds alike. Count, min, and max are exact; mean and standard
+// deviation are maintained with Welford's method, which stays accurate even
+// when the spread is tiny relative to the mean (a steady latency floor).
 //
 // Memory is constant (976 counters) however many samples are added, and two
 // histograms merge by adding counters, which lets each thread record into its
@@ -52,10 +53,11 @@ class Histogram {
   std::uint64_t count_ = 0;
   std::uint64_t min_ = UINT64_MAX;
   std::uint64_t max_ = 0;
-  // Sums are kept in floating point: a sum of squared microsecond latencies
-  // overflows 64 bits after a few million multi-second samples.
-  double sum_ = 0.0;
-  double sum_of_squares_ = 0.0;
+  // Welford's running mean and sum of squared deviations from it. The naive
+  // E[x^2] - E[x]^2 loses every significant digit when samples sit near a
+  // large mean -- 1e12 +/- 1 has a variance below the rounding error of 1e24.
+  double mean_ = 0.0;
+  double squared_deviations_ = 0.0;
 };
 
 }  // namespace strata

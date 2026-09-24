@@ -42,6 +42,35 @@ TEST(Histogram, TracksExactSummaryStatistics) {
   EXPECT_DOUBLE_EQ(histogram.StandardDeviation(), 2.0);  // textbook population example
 }
 
+// A steady floor with tiny jitter: the naive E[x^2] - E[x]^2 formula returns
+// garbage here because 1e12^2 swamps a variance of 2/3. Welford does not.
+TEST(Histogram, DeviationStaysAccurateNearALargeMean) {
+  Histogram histogram;
+  constexpr std::uint64_t kFloor = 1'000'000'000'000ULL;
+  for (int round = 0; round < 1000; ++round) {
+    histogram.Add(kFloor);
+    histogram.Add(kFloor + 1);
+    histogram.Add(kFloor + 2);
+  }
+  EXPECT_NEAR(histogram.StandardDeviation(), std::sqrt(2.0 / 3.0), 1e-3);
+  EXPECT_NEAR(histogram.Mean(), static_cast<double>(kFloor) + 1.0, 1e-3);
+}
+
+TEST(Histogram, MergedDeviationMatchesTheCombinedSamples) {
+  Histogram left;
+  Histogram right;
+  Histogram both;
+  for (std::uint64_t value = 1; value <= 1000; ++value) {
+    left.Add(value);
+    both.Add(value);
+    right.Add(value * 1000);
+    both.Add(value * 1000);
+  }
+  left.Merge(right);
+  EXPECT_NEAR(left.StandardDeviation(), both.StandardDeviation(), 1e-6 * both.StandardDeviation());
+  EXPECT_NEAR(left.Mean(), both.Mean(), 1e-9 * both.Mean());
+}
+
 TEST(Histogram, SmallValuesHaveExactBuckets) {
   for (std::uint64_t value = 0; value < 16; ++value) {
     EXPECT_EQ(Histogram::BucketFor(value), value);
@@ -120,7 +149,7 @@ TEST(Histogram, MergeEqualsAddingEverySample) {
   EXPECT_EQ(left.Count(), both.Count());
   EXPECT_EQ(left.Min(), both.Min());
   EXPECT_EQ(left.Max(), both.Max());
-  EXPECT_DOUBLE_EQ(left.Mean(), both.Mean());
+  EXPECT_NEAR(left.Mean(), both.Mean(), 1e-9 * both.Mean());
   EXPECT_DOUBLE_EQ(left.Percentile(99), both.Percentile(99));
 }
 
