@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,15 @@ class FaultInjectionEnv final : public EnvWrapper {
   // the disk. Reads still work.
   void SetFilesystemActive(bool active);
 
+  // Lets `ops` more mutating calls (create, append, flush, sync, rename,
+  // remove, SyncDir) succeed, then deactivates the filesystem as if the
+  // process died right there. Enumerating `ops` over 0..mutating_ops() of a
+  // clean run visits every crash point of a code path. nullopt disables it.
+  void SetCrashAfterOps(std::optional<std::uint64_t> ops);
+
+  // Mutating calls that succeeded since construction.
+  [[nodiscard]] std::uint64_t mutating_ops() const;
+
   // While set, Sync and SyncDir fail with IoError and have no durable effect.
   void SetSyncFailure(bool fail);
 
@@ -69,7 +79,7 @@ class FaultInjectionEnv final : public EnvWrapper {
   [[nodiscard]] std::uint64_t sync_dir_count() const;
 
   // Called by the files this Env hands out.
-  Status CheckWritable() const;
+  Status CheckWritable();
   void RecordAppend(const std::string& path, std::uint64_t bytes);
   Status RecordSync(const std::string& path);
   Status InjectedSyncFailure() const;
@@ -99,6 +109,8 @@ class FaultInjectionEnv final : public EnvWrapper {
   mutable std::mutex mutex_;
   bool active_ = true;
   bool fail_syncs_ = false;
+  std::optional<std::uint64_t> ops_until_crash_;
+  std::uint64_t mutating_ops_ = 0;
   std::uint64_t sync_count_ = 0;
   std::uint64_t sync_dir_count_ = 0;
   std::map<std::string, FileState> files_;

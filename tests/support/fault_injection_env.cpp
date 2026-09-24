@@ -51,9 +51,30 @@ class FaultWritableFile final : public WritableFile {
 
 FaultInjectionEnv::FaultInjectionEnv(Env* base) : EnvWrapper(base) {}
 
-Status FaultInjectionEnv::CheckWritable() const {
+Status FaultInjectionEnv::CheckWritable() {
   const std::lock_guard<std::mutex> guard(mutex_);
-  return active_ ? Status::Ok() : Status::IoError("filesystem inactive (simulated crash)");
+  if (active_ && ops_until_crash_) {
+    if (*ops_until_crash_ == 0) {
+      active_ = false;
+    } else {
+      --*ops_until_crash_;
+    }
+  }
+  if (!active_) {
+    return Status::IoError("filesystem inactive (simulated crash)");
+  }
+  ++mutating_ops_;
+  return Status::Ok();
+}
+
+void FaultInjectionEnv::SetCrashAfterOps(std::optional<std::uint64_t> ops) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  ops_until_crash_ = ops;
+}
+
+std::uint64_t FaultInjectionEnv::mutating_ops() const {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  return mutating_ops_;
 }
 
 Status FaultInjectionEnv::InjectedSyncFailure() const {
