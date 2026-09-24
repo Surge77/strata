@@ -4,16 +4,13 @@
 #include <utility>
 #include <vector>
 
+#include "db/builder.hpp"
 #include "db/filename.hpp"
 #include "db/write_batch_internal.hpp"
 #include "log/log_reader.hpp"
 
 namespace strata {
 namespace {
-
-// Target size of the batches consolidation writes: large enough that the log
-// is not all headers, small enough that no single record is huge.
-constexpr std::size_t kConsolidationBatchBytes = 1U << 20U;
 
 // Applies a batch's operations to the memtable with consecutive sequence
 // numbers starting at the batch's own.
@@ -52,8 +49,8 @@ Status InFile(const Status& status, const std::string& file) {
 }
 
 // Collects the log reader's reports while a WAL is replayed. Every report is
-// logged; whether any of them is fatal is decided after the whole log has been
-// read (see RecoverLogFile), because that depends on what follows the damage.
+// logged; whether any is fatal is decided after the whole log has been read,
+// because that depends on what follows the damage.
 class RecoveryReporter final : public log::Reader::Reporter {
  public:
   RecoveryReporter(Logger* info_log, std::string file)
@@ -83,13 +80,11 @@ class RecoveryReporter final : public log::Reader::Reporter {
   std::uint64_t problems_ = 0;
 };
 
-// One recovered memtable entry, for consolidation.
-struct Entry {
-  SequenceNumber sequence;
-  ValueType type;
-  std::string key;
-  std::string value;
-};
+bool IsEmpty(const MemTable& mem) {
+  auto it = mem.NewIterator();
+  it->SeekToFirst();
+  return !it->Valid();
+}
 
 }  // namespace
 
@@ -125,9 +120,13 @@ Status DBImpl::OpenDatabase() {
   // another process has the database open.
   STRATA_ASSIGN_OR_RETURN(db_lock_, env_->LockFile(LockFileName(dbname_)));
 
+  table_cache_ = std::make_unique<TableCache>(dbname_, env_, &internal_comparator_);
+  versions_ = std::make_unique<VersionSet>(dbname_, env_, &internal_comparator_);
+  bool existing = false;
+  STRATA_RETURN_IF_ERROR(versions_->Recover(&existing));
+
   STRATA_ASSIGN_OR_RETURN(const std::vector<std::string> children, env_->GetChildren(dbname_));
   std::vector<std::uint64_t> logs;
-  bool has_data = false;
   for (const std::string& child : children) {
     std::uint64_t number = 0;
     FileType type = FileType::kLockFile;
@@ -135,46 +134,57 @@ Status DBImpl::OpenDatabase() {
       continue;
     }
     if (number == UINT64_MAX) {
-      // The next file would need number UINT64_MAX + 1, which wraps to 0 and
-      // would sort -- and replay -- before everything else.
+      // The next file would need number UINT64_MAX + 1, which wraps to 0.
       return Status::Corruption(dbname_ + "/" + child + ": file number space exhausted");
     }
-    next_file_number_ = std::max(next_file_number_, number + 1);
-    if (type == FileType::kLogFile) {
+    versions_->MarkFileNumberUsed(number);
+    // Logs below the MANIFEST's log number were flushed to tables already.
+    if (type == FileType::kLogFile && number >= versions_->log_number()) {
       logs.push_back(number);
     }
-    has_data = has_data || type == FileType::kLogFile || type == FileType::kTableFile ||
-               type == FileType::kDescriptorFile || type == FileType::kCurrentFile;
+    existing = existing || type == FileType::kLogFile || type == FileType::kTableFile;
   }
   // Checked before anything is written, so rejecting an existing database
   // leaves it exactly as it was.
-  if (options_.error_if_exists && has_data) {
+  if (options_.error_if_exists && existing) {
     return Status::AlreadyExists(dbname_ + " already contains a database (error_if_exists)");
   }
 
   if (info_log_ == nullptr) {
-    // Appended to, never rotated: rotating on every open would push the log of
-    // a crashed session out after two failed attempts to reopen -- exactly
-    // when it is needed.
+    // Appended to, never rotated, so a crashed session's log survives
+    // repeated failed attempts to reopen.
     STRATA_ASSIGN_OR_RETURN(owned_info_log_, NewFileLogger(env_, InfoLogFileName(dbname_)));
     info_log_ = owned_info_log_.get();
   }
   Log(info_log_, LogLevel::kInfo, "=== opening {} ===", dbname_);
 
-  // Logs are numbered in creation order, so replaying them in numeric order
-  // re-applies every write in the order it was acknowledged.
+  // Replay, in creation order, every log not yet flushed to a table.
   std::sort(logs.begin(), logs.end());
-  mem_ = std::make_unique<MemTable>(&internal_comparator_);
-  SequenceNumber max_sequence = 0;
+  mem_ = std::make_shared<MemTable>(&internal_comparator_);
+  SequenceNumber max_sequence = versions_->last_sequence();
   for (std::size_t index = 0; index < logs.size(); ++index) {
     const bool newest = index + 1 == logs.size();
     STRATA_RETURN_IF_ERROR(RecoverLogFile(logs[index], newest, &max_sequence));
   }
   last_sequence_ = max_sequence;
+  versions_->SetLastSequence(last_sequence_);
 
+  // Whatever was replayed becomes a level-0 table, committed together with
+  // the new log number in one MANIFEST edit. Until that commit the old logs
+  // stay authoritative; after it they are obsolete. This also starts the
+  // session's new MANIFEST and publishes it through CURRENT.
   STRATA_RETURN_IF_ERROR(NewLogFile());
-  STRATA_RETURN_IF_ERROR(ConsolidateRecoveredLogs(logs));
-  Log(info_log_, LogLevel::kInfo, "opened {}: recovered {} log file(s), last sequence {}", dbname_,
+  VersionEdit edit;
+  if (!IsEmpty(*mem_)) {
+    STRATA_RETURN_IF_ERROR(WriteLevel0Table(mem_.get(), &edit, nullptr));
+    mem_ = std::make_shared<MemTable>(&internal_comparator_);
+  }
+  edit.SetLogNumber(log_number_);
+  STRATA_RETURN_IF_ERROR(versions_->LogAndApply(&edit));
+  DeleteObsoleteFiles();
+
+  background_thread_ = std::thread([this] { BackgroundLoop(); });
+  Log(info_log_, LogLevel::kInfo, "opened {}: replayed {} log(s), last sequence {}", dbname_,
       logs.size(), last_sequence_);
   return Status::Ok();
 }
@@ -189,7 +199,6 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
   std::string scratch;
   WriteBatch batch;
   std::uint64_t applied = 0;
-  std::uint64_t duplicates = 0;
   std::uint64_t applied_after_problem = 0;
   while (reader.ReadRecord(&record, &scratch)) {
     if (!WriteBatchInternal::SetContents(&batch, record).ok()) {
@@ -209,10 +218,7 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
     const SequenceNumber first = WriteBatchInternal::Sequence(batch);
     const SequenceNumber last = first + batch.Count() - 1;
     if (last <= *max_sequence) {
-      // Already applied from an older log: a copy written by a consolidation
-      // that crashed before it could delete the logs it copied.
-      ++duplicates;
-      continue;
+      continue;  // already durable in a table: this log outlived its flush
     }
     if (first <= *max_sequence) {
       reporter.Corruption(record.size(),
@@ -233,98 +239,156 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
       // Damage with nothing valid after it, at the end of the newest log, is
       // what an interrupted append looks like -- including after power loss,
       // when a record's first block can survive while the next reads back as
-      // zeros. Nothing in it was acknowledged as durable (every synced write
-      // precedes it), so it is treated like any torn tail.
+      // zeros. Nothing in it was acknowledged as durable.
       Log(info_log_, LogLevel::kWarn,
           "{}: treating damage at the end of the newest log as a torn write", file_name);
     } else if (!options_.ignore_wal_corruption) {
       return reporter.first_problem();
     }
   }
-  Log(info_log_, LogLevel::kInfo, "{}: {} batch(es) applied, {} duplicate(s) skipped", file_name,
-      applied, duplicates);
-  return Status::Ok();
-}
-
-Status DBImpl::ConsolidateRecoveredLogs(const std::vector<std::uint64_t>& old_logs) {
-  if (old_logs.empty()) {
-    return Status::Ok();
-  }
-
-  // Everything recovered goes into the new log, ordered by sequence number and
-  // grouped into batches of consecutive sequences, then synced. Only after that
-  // are the replayed logs deleted. This is what makes recovery leave the
-  // database in a clean state:
-  //   * logs replayed from the page cache after a crash can no longer lose
-  //     their unsynced tail underneath later synced writes (they are gone);
-  //   * damage dropped by salvage or torn-tail handling does not reappear on
-  //     the next open with sequence numbers the new writes have reused;
-  //   * the number of logs stays at one instead of growing with every open.
-  // A crash in the middle leaves old logs *and* a partial copy; replay skips
-  // the copy's batches as duplicates (RecoverLogFile).
-  std::vector<Entry> entries;
-  auto it = mem_->NewIterator();
-  for (it->SeekToFirst(); it->Valid(); it->Next()) {
-    ParsedInternalKey parsed;
-    if (!ParseInternalKey(it->key(), &parsed)) {
-      return Status::Internal("memtable holds an unparseable internal key");
-    }
-    entries.push_back(
-        {parsed.sequence, parsed.type, std::string(parsed.user_key), std::string(it->value())});
-  }
-  std::sort(entries.begin(), entries.end(),
-            [](const Entry& a, const Entry& b) { return a.sequence < b.sequence; });
-
-  WriteBatch batch;
-  SequenceNumber next_in_batch = 0;
-  auto flush_batch = [&]() -> Status {
-    if (batch.Count() == 0) {
-      return Status::Ok();
-    }
-    STRATA_RETURN_IF_ERROR(log_->AddRecord(WriteBatchInternal::Contents(batch)));
-    batch.Clear();
-    return Status::Ok();
-  };
-  for (const Entry& entry : entries) {
-    if (batch.Count() > 0 &&
-        (entry.sequence != next_in_batch || batch.ApproximateSize() > kConsolidationBatchBytes)) {
-      STRATA_RETURN_IF_ERROR(flush_batch());
-    }
-    if (batch.Count() == 0) {
-      WriteBatchInternal::SetSequence(&batch, entry.sequence);
-    }
-    if (entry.type == ValueType::kValue) {
-      batch.Put(entry.key, entry.value);
-    } else {
-      batch.Delete(entry.key);
-    }
-    next_in_batch = entry.sequence + 1;
-  }
-  STRATA_RETURN_IF_ERROR(flush_batch());
-  STRATA_RETURN_IF_ERROR(log_file_->Sync());
-
-  for (const std::uint64_t number : old_logs) {
-    STRATA_RETURN_IF_ERROR(env_->RemoveFile(LogFileName(dbname_, number)));
-  }
-  STRATA_RETURN_IF_ERROR(env_->SyncDir(dbname_));
-  Log(info_log_, LogLevel::kInfo, "consolidated {} entrie(s) from {} log(s) into log {}",
-      entries.size(), old_logs.size(), log_number_);
+  Log(info_log_, LogLevel::kInfo, "{}: {} batch(es) applied", file_name, applied);
   return Status::Ok();
 }
 
 Status DBImpl::NewLogFile() {
-  const std::uint64_t number = next_file_number_++;
+  const std::uint64_t number = versions_->NewFileNumber();
   const std::string file_name = LogFileName(dbname_, number);
   STRATA_ASSIGN_OR_RETURN(auto file, env_->NewWritableFile(file_name));
-  // Make the new log's *name* durable before any write relies on it: syncing
-  // the records alone would leave a log that vanishes on power loss along with
-  // every acknowledged write in it (see LogPowerLoss tests).
+  // Make the new log's *name* durable before any write relies on it.
   STRATA_RETURN_IF_ERROR(env_->SyncDir(dbname_));
+  if (log_file_ != nullptr) {
+    // Sync the log being retired before a newer one can take synced writes:
+    // otherwise power loss could keep a later synced write while losing
+    // earlier unsynced ones, leaving a state that is not a prefix of what was
+    // acknowledged.
+    STRATA_RETURN_IF_ERROR(log_file_->Sync());
+  }
   log_ = nullptr;
   log_file_ = std::move(file);
   log_ = std::make_unique<log::Writer>(log_file_.get());
   log_number_ = number;
   return Status::Ok();
+}
+
+Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
+                                std::unique_lock<std::mutex>* lock) {
+  FileMetaData meta;
+  meta.number = versions_->NewFileNumber();
+  pending_outputs_.insert(meta.number);
+  auto it = mem->NewIterator();
+  if (lock != nullptr) {
+    lock->unlock();
+  }
+  Status status =
+      BuildTable(dbname_, env_, &internal_comparator_, table_cache_.get(), it.get(), &meta);
+  if (lock != nullptr) {
+    lock->lock();
+  }
+  pending_outputs_.erase(meta.number);
+  STRATA_RETURN_IF_ERROR(status);
+  if (meta.file_size > 0) {
+    Log(info_log_, LogLevel::kInfo, "flushed table {} ({} bytes)", meta.number, meta.file_size);
+    edit->AddFile(0, std::move(meta));
+  }
+  return Status::Ok();
+}
+
+Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
+  while (true) {
+    if (!background_error_.ok()) {
+      return background_error_;
+    }
+    if (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size) {
+      return Status::Ok();
+    }
+    if (imm_ != nullptr) {
+      // The previous memtable is still being flushed: wait for it. This is
+      // the (simple) write stall; phase 7 adds level-0 slowdowns.
+      flush_done_.wait(*lock);
+      continue;
+    }
+    if (Status status = NewLogFile(); !status.ok()) {
+      background_error_ = status;
+      return status;
+    }
+    imm_ = std::move(mem_);
+    mem_ = std::make_shared<MemTable>(&internal_comparator_);
+    background_work_.notify_one();
+  }
+}
+
+void DBImpl::BackgroundLoop() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  while (true) {
+    background_work_.wait(
+        lock, [this] { return shutting_down_ || (imm_ != nullptr && background_error_.ok()); });
+    if (shutting_down_) {
+      return;
+    }
+    flush_running_ = true;
+    const std::shared_ptr<MemTable> imm = imm_;
+    VersionEdit edit;
+    Status status = WriteLevel0Table(imm.get(), &edit, &lock);
+    if (status.ok()) {
+      // Logs before the active one hold only what `imm` held, which is now in
+      // a table: committing the active log number retires them.
+      edit.SetLogNumber(log_number_);
+      versions_->SetLastSequence(last_sequence_);
+      status = versions_->LogAndApply(&edit);
+    }
+    if (status.ok()) {
+      imm_ = nullptr;
+      DeleteObsoleteFiles();
+    } else {
+      background_error_ = status;
+      Log(info_log_, LogLevel::kError, "flush failed; refusing further writes: {}",
+          status.ToString());
+    }
+    flush_running_ = false;
+    flush_done_.notify_all();
+  }
+}
+
+void DBImpl::DeleteObsoleteFiles() {
+  std::set<std::uint64_t> live = pending_outputs_;
+  versions_->AddLiveFiles(&live);
+  auto children = env_->GetChildren(dbname_);
+  if (!children.ok()) {
+    return;  // retried after the next flush
+  }
+  for (const std::string& child : *children) {
+    std::uint64_t number = 0;
+    FileType type = FileType::kLockFile;
+    if (!ParseFileName(child, &number, &type)) {
+      continue;
+    }
+    bool keep = true;
+    switch (type) {
+      case FileType::kLogFile:
+        keep = number >= versions_->log_number();
+        break;
+      case FileType::kDescriptorFile:
+        keep = number >= versions_->manifest_file_number();
+        break;
+      case FileType::kTableFile:
+        keep = live.contains(number);
+        break;
+      case FileType::kTempFile:
+        keep = false;  // a CURRENT that was never renamed into place
+        break;
+      case FileType::kCurrentFile:
+      case FileType::kLockFile:
+      case FileType::kInfoLogFile:
+        break;
+    }
+    if (!keep) {
+      if (type == FileType::kTableFile) {
+        table_cache_->Evict(number);
+      }
+      Log(info_log_, LogLevel::kInfo, "deleting obsolete file {}", child);
+      static_cast<void>(env_->RemoveFile(dbname_ + "/" + child));
+    }
+  }
 }
 
 Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
@@ -335,16 +399,13 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
     return Status::Ok();
   }
 
-  const std::lock_guard<std::mutex> guard(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
   if (closed_) {
     return Status::InvalidArgument("database is closed");
   }
-  if (!background_error_.ok()) {
-    return background_error_;
-  }
+  STRATA_RETURN_IF_ERROR(MakeRoomForWrite(&lock));
 
-  // Stamp a copy with its sequence number; the caller's batch stays untouched
-  // and can be reused.
+  // Stamp a copy with its sequence number; the caller's batch stays untouched.
   WriteBatch sequenced = batch;
   WriteBatchInternal::SetSequence(&sequenced, last_sequence_ + 1);
 
@@ -358,9 +419,6 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
     status = InsertInto(sequenced, mem_.get());
   }
   if (!status.ok()) {
-    // Either the log may now hold a partial record, or the memtable holds part
-    // of a batch whose sequence numbers were not consumed. Both would be
-    // compounded by accepting more writes.
     background_error_ = status;
     Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
         log_number_, status.ToString());
@@ -374,28 +432,71 @@ Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
   if (key.size() > WriteBatch::kMaxKeySize) {
     return Status::InvalidArgument("key exceeds the size limit");
   }
-  const std::lock_guard<std::mutex> guard(mutex_);
-  if (closed_) {
-    return Status::InvalidArgument("database is closed");
+  std::shared_ptr<MemTable> mem;
+  std::shared_ptr<MemTable> imm;
+  std::shared_ptr<const Version> version;
+  SequenceNumber sequence = 0;
+  {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (closed_) {
+      return Status::InvalidArgument("database is closed");
+    }
+    mem = mem_;
+    imm = imm_;
+    version = versions_->current();
+    sequence = last_sequence_;
   }
-  const LookupKey lookup(key, last_sequence_);
+  // Searched without the mutex: the memtables allow concurrent readers, and
+  // the Version (and so its files) stays alive while `version` is held.
+  const LookupKey lookup(key, sequence);
   std::string value;
-  if (mem_->Get(lookup, &value) == MemTable::LookupResult::kFound) {
+  for (const MemTable* table : {mem.get(), imm.get()}) {
+    if (table == nullptr) {
+      continue;
+    }
+    switch (table->Get(lookup, &value)) {
+      case MemTable::LookupResult::kFound:
+        return value;
+      case MemTable::LookupResult::kDeleted:
+        return Status::NotFound();
+      case MemTable::LookupResult::kNotPresent:
+        break;
+    }
+  }
+  STRATA_ASSIGN_OR_RETURN(const auto found, version->Get(lookup, &value, table_cache_.get()));
+  if (found == MemTable::LookupResult::kFound) {
     return value;
   }
   return Status::NotFound();
 }
 
+void DBImpl::WaitForFlush() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  flush_done_.wait(lock, [this] {
+    return (imm_ == nullptr && !flush_running_) || !background_error_.ok() || shutting_down_;
+  });
+}
+
 Status DBImpl::Close() {
-  const std::lock_guard<std::mutex> guard(mutex_);
-  if (closed_) {
-    return Status::Ok();
+  {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (closed_) {
+      return Status::Ok();
+    }
+    closed_ = true;
+    shutting_down_ = true;
   }
-  closed_ = true;
+  background_work_.notify_all();
+  if (background_thread_.joinable()) {
+    background_thread_.join();
+  }
+
+  const std::lock_guard<std::mutex> guard(mutex_);
   Status status;
   if (log_file_ != nullptr) {
     // A clean close leaves every acknowledged write durable, whatever its
-    // WriteOptions: one fdatasync, paid once per session.
+    // WriteOptions: one fdatasync, paid once per session. An unflushed
+    // memtable is simply replayed from the log next time.
     if (background_error_.ok()) {
       status = log_file_->Sync();
     }

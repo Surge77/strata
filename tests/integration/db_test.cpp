@@ -142,7 +142,7 @@ TEST_F(DBTest, ManyReopensKeepEverything) {
   for (const auto& [key, value] : model) {
     ASSERT_EQ(Get(key), value) << key;
   }
-  EXPECT_EQ(LogFiles().size(), 1U) << "recovery consolidates every log into one";
+  EXPECT_EQ(LogFiles().size(), 1U) << "recovery flushes every old log into a table";
 }
 
 // Differential test against std::map: random puts, deletes, and batches, with
@@ -265,7 +265,7 @@ TEST_F(DBTest, InfoLogAccumulatesAcrossSessions) {
     ++banners;
   }
   EXPECT_EQ(banners, 2U) << contents;
-  EXPECT_NE(contents.find("consolidated"), std::string::npos) << contents;
+  EXPECT_NE(contents.find("replayed"), std::string::npos) << contents;
 }
 
 // Rejecting an existing database must leave it exactly as it was.
@@ -310,7 +310,7 @@ TEST_F(DBTest, TornTailIsDiscardedSilently) {
 
 // After power loss with sync = false, the start of a record can survive while
 // the next block reads back as zeros. With nothing valid after it, that is a
-// torn write -- and after recovery consolidates, a strict reopen must work too.
+// torn write -- and after recovery flushes it, a strict reopen must work too.
 TEST_F(DBTest, ZeroFilledTailOfTheNewestLogIsATornWrite) {
   Open();
   ASSERT_TRUE(db_.Put("kept", "yes").ok());
@@ -346,7 +346,7 @@ TEST_F(DBTest, DamageFollowedByValidRecordsFailsOpen) {
 }
 
 // Salvage mode opens anyway, dropping the damaged block. Recovery then
-// consolidates, so the damage is gone for good: a strict reopen works, and new
+// flushes to a table, so the damage is gone for good: a strict reopen works, and new
 // writes can never collide with sequence numbers of the dropped batch.
 TEST_F(DBTest, SalvagedDatabaseReopensStrictlyAndKeepsNewWrites) {
   Open();
@@ -394,9 +394,9 @@ class HandWrittenLogs : public DBTest {
   }
 };
 
-// A consolidation that crashed after writing its copy but before deleting the
-// logs it copied leaves every batch twice. Replay must apply each once.
-TEST_F(HandWrittenLogs, DuplicatesFromAnInterruptedConsolidationAreSkipped) {
+// Two logs that both hold the same batches (as a phase-3 consolidation that
+// crashed mid-way could leave) must still apply each batch once.
+TEST_F(HandWrittenLogs, DuplicateBatchesAcrossLogsAreSkipped) {
   WriteLog(1, {Batch(1, "a", "1"), Batch(2, "b", "2"), Batch(3, "a", "3")});
   WriteLog(2, {Batch(1, "a", "1"), Batch(2, "b", "2"), Batch(3, "a", "3"), Batch(4, "c", "4")});
   Open();
