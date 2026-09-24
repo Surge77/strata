@@ -59,3 +59,19 @@ Skipping is silent and permanent. The operator chooses salvage explicitly.
 
 **Revisit if** measurements in phase 11 show group-committed `sync = true` within a small factor
 of `sync = false`, at which point durable-by-default becomes affordable.
+
+## Amendment (phase 3 review, 2026-09-24)
+
+An independent database-internals review found that recovery could produce a state that was
+not a prefix of what had been acknowledged: logs replayed after a crash stayed unsynced, and a
+later synced write in a newer log could survive a power loss that rolled the older one back.
+Three amendments follow:
+
+- **`Close()` fdatasyncs the log.** A clean close makes every acknowledged write durable,
+  whatever its `WriteOptions`. Decision 1's "flushes" is replaced by "syncs".
+- **Recovery consolidates.** After replay, everything recovered is rewritten into the new log,
+  synced, and only then are the replayed logs deleted. Replay skips batches that an
+  interrupted consolidation duplicated.
+- **Decision 5 is refined.** Damage at the *end of the newest log*, with no valid record after
+  it, is a torn write (a `sync = false` power loss can leave zero-filled blocks there), not
+  corruption. Damage followed by valid records still fails closed.

@@ -15,6 +15,9 @@ A write that was *not* acknowledged (its `Put` had not returned when the crash h
 may not survive. It will never survive *partially*, and it will never corrupt anything written
 before it.
 
+**A clean `Close()` makes every write durable**, including default `sync = false` writes: it
+fdatasyncs the log before releasing the database.
+
 ## How a write becomes durable
 
 ```
@@ -43,6 +46,10 @@ could then take away.
 | A torn write at the end of the log is discarded without error | `DBTest.TornTailIsDiscardedSilently`, `Log.EveryTruncationOffsetYieldsACleanPrefix` |
 | Damage *inside* the log fails `Open` instead of silently dropping writes | `DBTest.CorruptionInsideTheLogFailsOpen` |
 | After a failed write or sync, no later write is acknowledged | `DBPowerLoss.AFailedSyncStopsAllFurtherWrites` |
+| Recovery never resurrects an old write underneath a newer synced one | `DBPowerLoss.RecoveryNeverResurrectsAWriteBehindANewerSyncedOne` |
+| Power loss immediately after recovery loses nothing | `DBPowerLoss.DataSurvivesPowerLossRightAfterRecovery` |
+| A clean `Close` makes unsynced writes durable | `DBPowerLoss.CleanCloseMakesUnsyncedWritesDurable` |
+| Overwrites and deletes are recovered exactly, in order, after `SIGKILL` | `DBCrash.SigkillNeverLosesAnAcknowledgedWrite` (model-based) |
 | Two processes can never open the same database | `PosixEnv.LockExcludesOtherProcessesUntilReleased`, `DBTest.SecondOpenOfTheSameDatabaseIsBusy` |
 
 ### How the tests know they are testing something
@@ -55,6 +62,10 @@ crash tests were rerun, and at least one had to fail (phase 3 journal):
 | `SyncDir` after creating a log | 3 power-loss tests |
 | `fdatasync` for `sync = true` | 3 power-loss tests |
 | the log writer's per-record `Flush` | the `SIGKILL` test |
+| recovery's consolidation (entirely) | the resurrection test |
+| consolidation's `fdatasync` | `DataSurvivesPowerLossRightAfterRecovery` |
+| consolidation's `SyncDir` | the resurrection test |
+| `Close`'s `fdatasync` | `CleanCloseMakesUnsyncedWritesDurable` |
 
 ## The power-loss model
 
@@ -83,8 +94,10 @@ covers every outcome a real power loss can produce.
 
 | What recovery finds | What happens |
 |---|---|
-| Nothing wrong | every log is replayed in order |
+| Nothing wrong | every log is replayed in order, then **consolidated**: rewritten into one new log, synced, and the old logs deleted |
 | A record cut off at the very end of a log | discarded quietly: it was never acknowledged |
-| A bad checksum, bad length, or undecodable batch *inside* a log | `Open` fails with `Corruption` and names the file |
+| Damage at the end of the *newest* log with no valid record after it | treated as a torn write (e.g. zero-filled blocks left by power loss), discarded, logged |
+| A bad checksum, bad length, or undecodable batch followed by valid records | `Open` fails with `Corruption` and names the file |
+| A batch whose sequence numbers were all recovered already | skipped as a duplicate (left by an interrupted consolidation) |
 | The same, with `Options::ignore_wal_corruption = true` | the damaged region is skipped, and each skip is logged in `LOG` |
 | An I/O error reading a log | `Open` fails, even in salvage mode |
