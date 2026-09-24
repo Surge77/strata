@@ -47,3 +47,11 @@ add_subdirectory(unit)
 add_subdirectory(integration)
 add_subdirectory(crash)
 add_subdirectory(fuzz)
+
+# The CLI end to end: each stratactl invocation is its own process, so this also
+# exercises WAL recovery between commands.
+if(STRATA_BUILD_TOOLS)
+  add_test(NAME stratactl_cli
+           COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratactl_test.sh $<TARGET_FILE:stratactl>)
+  set_tests_properties(stratactl_cli PROPERTIES LABELS integration)
+endif()
