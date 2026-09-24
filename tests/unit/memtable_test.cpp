@@ -77,6 +77,18 @@ TEST(MemTable, PrefixKeysAreDistinct) {
   EXPECT_EQ(Lookup(table, "abcd", 5, &value), Result::kNotPresent);
 }
 
+// A default-constructed Slice has a null data(); the DB passes one as the value
+// of every Delete. Copying it must not hand memcpy a null pointer (UBSan).
+TEST(MemTable, AcceptsNullEmptySlices) {
+  MemTable table;
+  table.Add(1, ValueType::kDeletion, strata::Slice(), strata::Slice());
+  table.Add(2, ValueType::kValue, "k", strata::Slice());
+  std::string value = "unchanged";
+  EXPECT_EQ(Lookup(table, "", 5, &value), Result::kDeleted);
+  ASSERT_EQ(Lookup(table, "k", 5, &value), Result::kFound);
+  EXPECT_EQ(value, "");
+}
+
 TEST(MemTable, KeysAndValuesAreBinarySafe) {
   MemTable table;
   const std::string key("a\0b", 3);

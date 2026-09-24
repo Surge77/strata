@@ -7,6 +7,15 @@
 namespace strata {
 namespace {
 
+// memcpy with a null source is undefined behaviour even for zero bytes, and an
+// empty Slice (e.g. the value of a Delete) may well have a null data().
+char* CopyBytes(char* destination, Slice bytes) {
+  if (!bytes.empty()) {
+    std::memcpy(destination, bytes.data(), bytes.size());
+  }
+  return destination + bytes.size();
+}
+
 // Reads a varint32-length-prefixed slice starting at `data`. Entries in the
 // arena were written by Add, so they are trusted: no bounds are known or
 // checked here.
@@ -33,12 +42,11 @@ void MemTable::Add(SequenceNumber sequence, ValueType type, Slice user_key, Slic
 
   char* const entry = arena_.Allocate(encoded_size);
   char* cursor = EncodeVarint32(entry, static_cast<std::uint32_t>(internal_key_size));
-  std::memcpy(cursor, user_key.data(), user_key.size());
-  cursor += user_key.size();
+  cursor = CopyBytes(cursor, user_key);
   EncodeFixed64(cursor, PackSequenceAndType(sequence, type));
   cursor += kInternalKeyTrailerSize;
   cursor = EncodeVarint32(cursor, static_cast<std::uint32_t>(value.size()));
-  std::memcpy(cursor, value.data(), value.size());
+  CopyBytes(cursor, value);
 
   table_.Insert(entry);
 }
