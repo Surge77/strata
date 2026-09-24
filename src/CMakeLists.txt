@@ -6,6 +6,7 @@ add_library(strata STATIC
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp
+    db/version_edit.cpp
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp
