@@ -45,6 +45,12 @@ void WriteBatch::Delete(Slice key) {
 
 void WriteBatch::Append(const WriteBatch& other) {
   oversized_ = oversized_ || other.oversized_;
+  // The count is a fixed32; a combined batch past 2^32 - 1 operations cannot
+  // be encoded, so it is refused like any other oversized batch.
+  if (std::uint64_t{Count()} + other.Count() > UINT32_MAX) {
+    oversized_ = true;
+    return;
+  }
   WriteBatchInternal::SetCount(this, Count() + other.Count());
   rep_.append(other.rep_, WriteBatchInternal::kHeaderSize);
 }

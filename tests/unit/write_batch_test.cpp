@@ -110,6 +110,19 @@ TEST(WriteBatch, OversizedOperationsPoisonTheBatchInsteadOfTruncating) {
   EXPECT_FALSE(clean.oversized());
 }
 
+// The count is a fixed32. Appending batches whose counts would sum past
+// 2^32 - 1 cannot be encoded, so the result is refused as oversized.
+TEST(WriteBatch, AppendRefusesACountOverflow) {
+  WriteBatch huge;
+  huge.Put("a", "1");
+  WriteBatchInternal::SetCount(&huge, 0xFFFFFFFFU);  // pretend: a maximal batch
+  WriteBatch one;
+  one.Put("b", "2");
+  huge.Append(one);
+  EXPECT_TRUE(huge.oversized());
+  EXPECT_EQ(huge.Count(), 0xFFFFFFFFU) << "the overflowing append was not applied";
+}
+
 TEST(WriteBatch, SequenceNumberRoundTrips) {
   WriteBatch batch;
   batch.Put("a", "1");
