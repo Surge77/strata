@@ -11,6 +11,13 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
+# Test-only helpers shared by every suite: temporary directories and the
+# power-loss simulating FaultInjectionEnv.
+add_library(strata_test_support STATIC
+    support/fault_injection_env.cpp)
+target_include_directories(strata_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(strata_test_support PUBLIC strata PRIVATE strata_warnings)
+
 # strata_add_test(<name> SUITE <unit|integration|crash|model> SOURCES <...>)
 #
 # SUITE becomes a ctest label so scripts/test.sh can run one tier at a time;
@@ -18,7 +25,8 @@ include(GoogleTest)
 function(strata_add_test name)
   cmake_parse_arguments(ARG "" "SUITE" "SOURCES" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
-  target_link_libraries(${name} PRIVATE strata strata_warnings GTest::gtest_main)
+  target_link_libraries(${name} PRIVATE strata strata_test_support strata_warnings
+                                        GTest::gtest_main)
   target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/src
                                              ${PROJECT_SOURCE_DIR}/tests
                                              ${CMAKE_CURRENT_SOURCE_DIR})
