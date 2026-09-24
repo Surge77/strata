@@ -14,7 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/test.sh [options] [-- <extra ctest args>]
 
-  --unit | --integration | --crash | --model   run only that suite
+  --unit | --integration | --crash | --model | --fuzz   run only that suite
   --build-dir <path>                           override the build directory
   -h, --help                                   show this message
 USAGE
@@ -28,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     --integration) LABEL=integration ;;
     --crash)       LABEL=crash ;;
     --model)       LABEL=model ;;
+    --fuzz)        LABEL=fuzz ;;
     --build-dir)   BUILD_DIR="$2"; shift ;;
     -h|--help)     usage; exit 0 ;;
     --)            shift; CTEST_EXTRA=("$@"); break ;;

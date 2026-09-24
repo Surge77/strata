@@ -45,3 +45,4 @@ endfunction()
 
 add_subdirectory(unit)
 add_subdirectory(crash)
+add_subdirectory(fuzz)

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Seconds per fuzz target (the v1.0 gate is 3600)"
+        required: false
+        default: "60"
 
 # Least privilege: every job here only reads the repository. Without this block
 # the token inherits whatever the repository or organization default is, which
@@ -126,3 +131,33 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+
+  # Coverage-guided fuzzing with libFuzzer + ASan/UBSan. Pushes and pull
+  # requests run each target for a minute; the one-hour-per-target release gate
+  # is a manual dispatch with fuzz_seconds=3600 (ADR-0004).
+  fuzz:
+    name: libFuzzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake clang-18
+      - name: Build fuzz targets
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: scripts/build.sh --asan --libfuzzer --build-dir "$STRATA_BUILD_DIR"
+      - name: Fuzz
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '60' }}
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          for target in "$STRATA_BUILD_DIR"/tests/fuzz/*_fuzz; do
+            echo "==> $(basename "$target") for ${FUZZ_SECONDS}s"
+            "$target" -max_total_time="$FUZZ_SECONDS" -print_final_stats=1
+          done
