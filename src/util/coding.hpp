@@ -102,9 +102,12 @@ void PutVarint64(std::string* destination, std::uint64_t value);
 [[nodiscard]] bool GetVarint32(Slice* input, std::uint32_t* value) noexcept;
 [[nodiscard]] bool GetVarint64(Slice* input, std::uint64_t* value) noexcept;
 
-// A varint length followed by that many bytes. Decoding returns false if the
-// length field is malformed or claims more bytes than the input holds. That
-// check is what stops a corrupt file from being trusted about its own size.
+// A varint32 length followed by that many bytes, so a slice is at most
+// 2^32 - 1 bytes (the formats in docs/format/ say varint32, and the memtable
+// stores 32-bit lengths). Decoding returns false if the length field is
+// malformed -- including a varint longer than 5 bytes -- or claims more bytes
+// than the input holds. That check is what stops a corrupt file from being
+// trusted about its own size.
 void PutLengthPrefixedSlice(std::string* destination, Slice value);
 [[nodiscard]] bool GetLengthPrefixedSlice(Slice* input, Slice* value) noexcept;
 

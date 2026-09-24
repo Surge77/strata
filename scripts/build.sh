@@ -23,6 +23,7 @@ Usage: scripts/build.sh [options]
   --tsan               -fsanitize=thread
   --coverage           instrument for coverage
   --clang              build with clang++ instead of the default compiler
+  --libfuzzer          link fuzz targets against libFuzzer (requires clang)
   --clean              delete the build directory first
   --build-dir <path>   override the build directory
   -h, --help           show this message
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --tsan)      SANITIZER="thread";            BUILD_TYPE=Debug ;;
     --coverage)  COVERAGE=ON; BUILD_TYPE=Debug ;;
     --clang)     EXTRA_ARGS+=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++) ;;
+    --libfuzzer) EXTRA_ARGS+=(-DSTRATA_FUZZ_LIBFUZZER=ON) ;;
     --clean)     CLEAN=1 ;;
     --build-dir) BUILD_DIR="$2"; shift ;;
     -h|--help)   usage; exit 0 ;;

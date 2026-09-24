@@ -147,7 +147,7 @@ TEST(LengthPrefixed, RejectsALengthLargerThanTheBuffer) {
   // The corruption that matters: a length field claiming far more bytes than
   // exist. Trusting it would mean reading, or allocating, out of bounds.
   std::string encoded;
-  strata::PutVarint64(&encoded, 1ULL << 40U);
+  strata::PutVarint32(&encoded, 1U << 30U);
   encoded.append("short");
 
   Slice cursor(encoded);
@@ -158,12 +158,31 @@ TEST(LengthPrefixed, RejectsALengthLargerThanTheBuffer) {
 
 TEST(LengthPrefixed, RejectsALengthOffByOne) {
   std::string encoded;
-  strata::PutVarint64(&encoded, 6);
+  strata::PutVarint32(&encoded, 6);
   encoded.append("12345");
 
   Slice cursor(encoded);
   Slice value;
   EXPECT_FALSE(strata::GetLengthPrefixedSlice(&cursor, &value));
+}
+
+// The formats specify a varint32 length. A 6-byte varint is well-formed as a
+// varint64 but malformed as a varint32, and a conforming reader must reject it
+// rather than accept a length no conforming writer could have produced.
+TEST(LengthPrefixed, RejectsALengthLongerThanAVarint32) {
+  std::string encoded;
+  strata::PutVarint64(&encoded, 1ULL << 35U);  // needs 6 bytes
+  encoded.append(std::string(64, 'x'));
+  Slice cursor(encoded);
+  Slice value;
+  EXPECT_FALSE(strata::GetLengthPrefixedSlice(&cursor, &value));
+}
+
+TEST(LengthPrefixed, UsesAOneByteLengthForShortSlices) {
+  std::string encoded;
+  strata::PutLengthPrefixedSlice(&encoded, "abc");
+  EXPECT_EQ(encoded, std::string("\x03"
+                                 "abc"));
 }
 
 TEST(LengthPrefixed, RejectsAMissingLengthField) {

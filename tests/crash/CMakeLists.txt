@@ -1,0 +1,1 @@
+strata_add_test(log_power_loss_test SUITE crash SOURCES log_power_loss_test.cpp)
