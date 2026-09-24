@@ -11,6 +11,7 @@ add_library(strata STATIC
     log/log_writer.cpp
     util/arena.cpp
     util/coding.cpp
+    util/comparator.cpp
     util/crc32c.cpp
     util/env_posix.cpp
     util/histogram.cpp

@@ -31,7 +31,8 @@ namespace strata {
 // Get and iterators may run concurrently with Add and with each other.
 class MemTable {
  public:
-  MemTable();
+  // `comparator` must outlive the memtable.
+  explicit MemTable(const InternalKeyComparator* comparator);
 
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
@@ -67,7 +68,7 @@ class MemTable {
 
   // Orders arena entries (pointers to the length-prefixed internal key).
   struct KeyComparator {
-    InternalKeyComparator comparator;
+    const InternalKeyComparator* comparator;
     int operator()(const char* a, const char* b) const;
   };
   using Table = SkipList<const char*, KeyComparator>;

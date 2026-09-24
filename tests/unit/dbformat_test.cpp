@@ -61,7 +61,7 @@ TEST(InternalKey, SortsByUserKeyThenNewestFirst) {
       Ikey("", 3, ValueType::kValue),     Ikey("aa", 2, ValueType::kValue),
       Ikey("a", 5, ValueType::kValue),
   };
-  const InternalKeyComparator comparator;
+  const InternalKeyComparator comparator(strata::BytewiseComparator());
   std::sort(keys.begin(), keys.end(), [&](const std::string& x, const std::string& y) {
     return comparator.Compare(x, y) < 0;
   });
@@ -79,7 +79,7 @@ TEST(InternalKey, SortsByUserKeyThenNewestFirst) {
 
 // User keys compare as unsigned bytes: 0xFF sorts after 'a', never before.
 TEST(InternalKey, ComparesUserKeysAsUnsignedBytes) {
-  const InternalKeyComparator comparator;
+  const InternalKeyComparator comparator(strata::BytewiseComparator());
   EXPECT_LT(comparator.Compare(Ikey("a", 1, ValueType::kValue), Ikey("\xff", 1, ValueType::kValue)),
             0);
 }
@@ -88,7 +88,7 @@ TEST(InternalKey, ComparesUserKeysAsUnsignedBytes) {
 // value and a tombstone -- rather than skipping past it.
 TEST(LookupKey, SortsBeforeEveryEntryAtItsOwnSequence) {
   const LookupKey lookup("k", 7);
-  const InternalKeyComparator comparator;
+  const InternalKeyComparator comparator(strata::BytewiseComparator());
   EXPECT_LE(comparator.Compare(lookup.internal_key(), Ikey("k", 7, ValueType::kValue)), 0);
   EXPECT_LT(comparator.Compare(lookup.internal_key(), Ikey("k", 7, ValueType::kDeletion)), 0);
   EXPECT_GT(comparator.Compare(lookup.internal_key(), Ikey("k", 8, ValueType::kValue)), 0);

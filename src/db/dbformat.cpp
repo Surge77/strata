@@ -25,8 +25,8 @@ bool ParseInternalKey(Slice internal_key, ParsedInternalKey* result) noexcept {
   return true;
 }
 
-int InternalKeyComparator::Compare(Slice a, Slice b) const noexcept {
-  const int by_user_key = ExtractUserKey(a).compare(ExtractUserKey(b));
+int InternalKeyComparator::Compare(Slice a, Slice b) const {
+  const int by_user_key = user_comparator_->Compare(ExtractUserKey(a), ExtractUserKey(b));
   if (by_user_key != 0) {
     return by_user_key;
   }
@@ -40,6 +40,30 @@ int InternalKeyComparator::Compare(Slice a, Slice b) const noexcept {
     return 1;
   }
   return 0;
+}
+
+void InternalKeyComparator::FindShortestSeparator(std::string* start, Slice limit) const {
+  const Slice user_start = ExtractUserKey(*start);
+  const Slice user_limit = ExtractUserKey(limit);
+  std::string shortened(user_start);
+  user_comparator_->FindShortestSeparator(&shortened, user_limit);
+  if (shortened.size() < user_start.size() &&
+      user_comparator_->Compare(user_start, shortened) < 0) {
+    // The user key got shorter and larger. The earliest possible trailer
+    // (largest sequence) makes it sort before every entry of that user key.
+    PutFixed64(&shortened, PackSequenceAndType(kMaxSequenceNumber, kValueTypeForSeek));
+    start->swap(shortened);
+  }
+}
+
+void InternalKeyComparator::FindShortSuccessor(std::string* key) const {
+  const Slice user_key = ExtractUserKey(*key);
+  std::string successor(user_key);
+  user_comparator_->FindShortSuccessor(&successor);
+  if (successor.size() < user_key.size() && user_comparator_->Compare(user_key, successor) < 0) {
+    PutFixed64(&successor, PackSequenceAndType(kMaxSequenceNumber, kValueTypeForSeek));
+    key->swap(successor);
+  }
 }
 
 LookupKey::LookupKey(Slice user_key, SequenceNumber sequence) {

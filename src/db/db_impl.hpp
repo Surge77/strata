@@ -59,6 +59,7 @@ class DBImpl {
   const Options options_;
   Env* const env_;
   const std::string dbname_;
+  const InternalKeyComparator internal_comparator_{BytewiseComparator()};
 
   // Declared first so it is released last, after the log file is closed.
   std::unique_ptr<FileLock> db_lock_;

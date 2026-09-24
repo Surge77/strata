@@ -1,5 +1,6 @@
 strata_add_test(arena_test   SUITE unit SOURCES arena_test.cpp)
 strata_add_test(coding_test  SUITE unit SOURCES coding_test.cpp)
+strata_add_test(comparator_test SUITE unit SOURCES comparator_test.cpp)
 strata_add_test(crc32c_test  SUITE unit SOURCES crc32c_test.cpp)
 strata_add_test(dbformat_test SUITE unit SOURCES dbformat_test.cpp)
 strata_add_test(env_posix_test SUITE unit SOURCES env_posix_test.cpp)
