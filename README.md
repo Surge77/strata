@@ -13,7 +13,7 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 5 of 15 in progress: MANIFEST, versions, and memtable flush.**
+> **Status: Phase 5 complete; phase 6 is in progress on its feature branch.**
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
 > by a clean `Close`) survives power loss. Each claim is backed by crash tests;
