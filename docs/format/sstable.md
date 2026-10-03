@@ -16,8 +16,8 @@ the internal key comparator.
 | data block 1        |
 | ...                 |
 | data block N-1      |
-| meta blocks         |  none yet; the Bloom filter block arrives in phase 6
-| metaindex block     |  maps meta block names to their handles (empty in phase 4)
+| meta blocks         |  optional whole-table Bloom filter from phase 6
+| metaindex block     |  maps meta block names to their handles
 | index block         |  one entry per data block
 | footer (48 bytes)   |  fixed size, at the very end of the file
 +---------------------+
@@ -25,6 +25,8 @@ the internal key comparator.
 
 A reader opens a table from the end: read the footer, which locates the index and metaindex
 blocks. The index then locates any data block.
+
+The optional Bloom filter is specified in [bloom_filter.md](bloom_filter.md).
 
 ## Block handle
 

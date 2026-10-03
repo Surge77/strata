@@ -3,7 +3,8 @@
 Strata is an embedded C++20 key-value engine. `strata::DB` is the public,
 move-only handle. `DBImpl` owns the active log and memtables, the background
 flush thread, a `VersionSet`, and a `TableCache`. The current implementation
-stores new tables at level 0. Compaction and Bloom filters are later phases.
+stores new tables at level 0. New tables carry Bloom filters; compaction is a
+later phase.
 
 ## Write path
 
@@ -31,8 +32,10 @@ mutex and checks those sources in order. The memtables support concurrent
 readers. Level-0 files can overlap, so `Version::Get` searches matching files
 from newest to oldest. A deletion marker stops the search and returns
 `NotFound`. The held `Version` keeps its table files live while the read runs.
-`TableCache` currently keeps opened tables without a size bound; cache limits
-are part of phase 6.
+New tables use a whole-table Bloom filter to skip data-block reads for definite
+misses. Tables created before phase 6 have no filter and use the normal read
+path. `TableCache` currently keeps opened tables without a size bound; cache
+limits are still part of phase 6.
 
 ## Recovery and publication
 

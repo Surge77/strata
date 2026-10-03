@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "table/block.hpp"
 #include "table/table_builder.hpp"
@@ -43,17 +45,23 @@ class Table {
   // there is one. The point-lookup path: one index search, one block read.
   Status Seek(Slice target, const std::function<void(Slice key, Slice value)>& found) const;
 
+  // A hint for exact user-key lookups. False means this table cannot contain
+  // the key; true requires a normal Seek. Older tables always return true.
+  [[nodiscard]] bool MayContainUserKey(Slice user_key) const noexcept;
+
   // Approximate file offset where `key` would be, for size estimates.
   [[nodiscard]] std::uint64_t ApproximateOffsetOf(Slice key) const;
 
  private:
   Table(const TableOptions& options, std::unique_ptr<RandomAccessFile> file,
-        std::uint64_t file_size, std::unique_ptr<Block> index, std::uint64_t metaindex_offset)
+        std::uint64_t file_size, std::unique_ptr<Block> index, std::uint64_t metaindex_offset,
+        std::optional<std::string> filter)
       : options_(options),
         file_(std::move(file)),
         file_size_(file_size),
         index_(std::move(index)),
-        metaindex_offset_(metaindex_offset) {}
+        metaindex_offset_(metaindex_offset),
+        filter_(std::move(filter)) {}
 
   // Reads the data block an index entry points to.
   Result<std::unique_ptr<Iterator>> BlockIterator(Slice index_value) const;
@@ -63,6 +71,7 @@ class Table {
   const std::uint64_t file_size_;
   const std::unique_ptr<Block> index_;
   const std::uint64_t metaindex_offset_;
+  const std::optional<std::string> filter_;
 };
 
 }  // namespace strata::table

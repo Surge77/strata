@@ -16,7 +16,7 @@ Status BuildTable(const std::string& dbname, Env* env, const InternalKeyComparat
   const std::string file_name = TableFileName(dbname, meta->number);
   Status status = [&]() -> Status {
     STRATA_ASSIGN_OR_RETURN(auto file, env->NewWritableFile(file_name));
-    table::TableBuilder builder({.comparator = comparator}, file.get());
+    table::TableBuilder builder({.comparator = comparator, .use_filter = true}, file.get());
     meta->smallest.assign(source->key());
     for (; source->Valid(); source->Next()) {
       meta->largest.assign(source->key());

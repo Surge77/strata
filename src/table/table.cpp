@@ -3,6 +3,8 @@
 #include <string>
 #include <utility>
 
+#include "table/bloom_filter.hpp"
+
 namespace strata::table {
 namespace {
 
@@ -196,14 +198,29 @@ Result<std::unique_ptr<Table>> Table::Open(const TableOptions& options,
   STRATA_RETURN_IF_ERROR(footer.DecodeFrom(footer_input));
 
   STRATA_ASSIGN_OR_RETURN(auto index, ReadAndParseBlock(*file, file_size, footer.index_handle));
-  // The metaindex is empty until phase 6, but it is read and verified here so
-  // a table that opens is known to have an intact map of its meta blocks.
   STRATA_ASSIGN_OR_RETURN(auto metaindex,
                           ReadAndParseBlock(*file, file_size, footer.metaindex_handle));
-  static_cast<void>(metaindex);
+  auto meta = metaindex->NewIterator(BytewiseComparator());
+  meta->Seek(kUserBloomFilterMetaName);
+  std::optional<std::string> filter;
+  if (meta->Valid() && meta->key() == kUserBloomFilterMetaName) {
+    BlockHandle handle;
+    Slice encoded_handle = meta->value();
+    STRATA_RETURN_IF_ERROR(handle.DecodeFrom(&encoded_handle));
+    if (!encoded_handle.empty()) {
+      return Status::Corruption("filter block handle has trailing bytes");
+    }
+    STRATA_ASSIGN_OR_RETURN(std::string contents, ReadBlock(*file, file_size, handle));
+    STRATA_RETURN_IF_ERROR(BloomFilter::Validate(contents));
+    filter = std::move(contents);
+  }
+  STRATA_RETURN_IF_ERROR(meta->status());
+  if (!BloomFilter::SupportsComparator(options.comparator)) {
+    filter.reset();
+  }
 
   return std::unique_ptr<Table>(new Table(options, std::move(file), file_size, std::move(index),
-                                          footer.metaindex_handle.offset()));
+                                          footer.metaindex_handle.offset(), std::move(filter)));
 }
 
 Result<std::unique_ptr<Iterator>> Table::BlockIterator(Slice index_value) const {
@@ -231,6 +248,10 @@ Status Table::Seek(Slice target, const std::function<void(Slice key, Slice value
     found(it->key(), it->value());
   }
   return it->status();
+}
+
+bool Table::MayContainUserKey(Slice user_key) const noexcept {
+  return !filter_ || BloomFilter::MayContain(user_key, *filter_);
 }
 
 std::uint64_t Table::ApproximateOffsetOf(Slice key) const {

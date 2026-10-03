@@ -59,4 +59,5 @@ catches a different class of mistake. The roles used, and what each is for:
 | 2 | [log](phase-02-log.md) |
 | 3 | [memtable and the first database](phase-03-memtable.md) |
 | 4 | [SSTables](phase-04-sstable.md) |
-| 5 | [Versions, MANIFEST and flush](phase-05-version-flush.md) (in progress) |
+| 5 | [Versions, MANIFEST and flush](phase-05-version-flush.md) |
+| 6 | [Read path](phase-06-read-path.md) (in progress) |
