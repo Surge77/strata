@@ -23,6 +23,15 @@ using strata::VersionEdit;
 using strata::VersionSet;
 using strata::test::TestDir;
 
+class FailCurrentSyncDirEnv final : public strata::EnvWrapper {
+ public:
+  explicit FailCurrentSyncDirEnv(Env* target) : EnvWrapper(target) {}
+
+  Status SyncDir(const std::string& /*dir*/) override {
+    return Status::IoError("injected CURRENT directory sync failure");
+  }
+};
+
 std::string IKey(const std::string& user_key, strata::SequenceNumber sequence) {
   std::string result;
   strata::AppendInternalKey(&result, ParsedInternalKey{user_key, sequence, ValueType::kValue});
@@ -191,6 +200,23 @@ TEST_F(VersionSetTest, DamagedManifestRecordIsCorruption) {
   auto versions = NewVersionSet();
   bool existing = false;
   EXPECT_TRUE(versions->Recover(&existing).IsCorruption());
+}
+
+TEST_F(VersionSetTest, FailedCurrentDirectorySyncKeepsTheRenamedManifest) {
+  FailCurrentSyncDirEnv failing(Env::Default());
+  {
+    VersionSet versions(dbname_, &failing, &comparator_);
+    bool existing = false;
+    ASSERT_TRUE(versions.Recover(&existing).ok());
+    VersionEdit edit;
+    edit.SetLogNumber(1);
+    EXPECT_TRUE(versions.LogAndApply(&edit).IsIoError());
+  }
+  auto recovered = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(recovered->Recover(&existing).ok());
+  EXPECT_TRUE(existing);
+  EXPECT_EQ(recovered->log_number(), 1U);
 }
 
 }  // namespace

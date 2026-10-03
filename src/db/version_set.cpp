@@ -188,7 +188,8 @@ Status VersionSet::WriteSnapshot(log::Writer* writer) const {
   return writer->AddRecord(record);
 }
 
-Status VersionSet::SetCurrentFile(std::uint64_t manifest_number) {
+Status VersionSet::SetCurrentFile(std::uint64_t manifest_number, bool* did_rename) {
+  *did_rename = false;
   const std::uint64_t temp_number = NewFileNumber();
   const std::string temp = TempFileName(dbname_, temp_number);
   {
@@ -210,6 +211,7 @@ Status VersionSet::SetCurrentFile(std::uint64_t manifest_number) {
     static_cast<void>(env_->RemoveFile(temp));
     return renamed;
   }
+  *did_rename = true;
   // Makes the rename -- and the new MANIFEST's own name -- durable.
   return env_->SyncDir(dbname_);
 }
@@ -242,15 +244,18 @@ Status VersionSet::LogAndApply(VersionEdit* edit) {
   if (status.ok()) {
     status = manifest_file_->Sync();  // the commit point
   }
+  bool current_renamed = false;
   if (status.ok() && new_manifest != 0) {
-    status = SetCurrentFile(new_manifest);
+    status = SetCurrentFile(new_manifest, &current_renamed);
   }
   if (!status.ok()) {
     // The MANIFEST may now end in a partial record; drop it so the next
     // change starts a fresh one rather than appending after the damage.
     manifest_log_ = nullptr;
     manifest_file_ = nullptr;
-    if (new_manifest != 0) {
+    // Once CURRENT has been renamed, it may already name this MANIFEST even
+    // if the directory sync failed. A later open must still be able to read it.
+    if (new_manifest != 0 && !current_renamed) {
       static_cast<void>(env_->RemoveFile(DescriptorFileName(dbname_, new_manifest)));
     }
     return status;

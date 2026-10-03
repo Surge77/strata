@@ -1,13 +1,16 @@
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "db/db_impl.hpp"
+#include "support/fault_injection_env.hpp"
 #include "support/file_util.hpp"
 #include "support/test_dir.hpp"
 
@@ -20,6 +23,19 @@ using strata::Status;
 using strata::WriteBatch;
 using strata::WriteOptions;
 using strata::test::TestDir;
+
+class FailTableCreationEnv final : public strata::EnvWrapper {
+ public:
+  explicit FailTableCreationEnv(strata::Env* target) : EnvWrapper(target) {}
+
+  strata::Result<std::unique_ptr<strata::WritableFile>> NewWritableFile(
+      const std::string& path) override {
+    if (path.ends_with(".sst")) {
+      return Status::IoError("injected table creation failure");
+    }
+    return target()->NewWritableFile(path);
+  }
+};
 
 // Small enough that a few hundred writes fill a memtable.
 constexpr std::size_t kSmallWriteBuffer = 16 * 1024;
@@ -118,6 +134,51 @@ TEST_F(FlushTest, FullMemtableIsFlushedToATableAndStaysReadable) {
   }
   const std::string log = strata::test::ReadFileToString(dir_.File("db/LOG"));
   EXPECT_NE(log.find("flushed table"), std::string::npos);
+}
+
+TEST_F(FlushTest, ConcurrentReaderKeepsAKeyVisibleDuringFlush) {
+  Open();
+  Put("stable", "value");
+  std::atomic<bool> running{true};
+  std::atomic<bool> failed{false};
+  std::thread reader([&] {
+    while (running.load()) {
+      auto value = db_->Get(ReadOptions{}, "stable");
+      if (!value.ok() || *value != "value") {
+        failed.store(true);
+        break;
+      }
+    }
+  });
+  ForceFlush();
+  running.store(false);
+  reader.join();
+  EXPECT_FALSE(failed.load());
+  EXPECT_EQ(Get("stable"), "value");
+}
+
+TEST_F(FlushTest, CloseSyncsTheActiveLogAfterBackgroundFlushFails) {
+  strata::test::FaultInjectionEnv tracked(strata::Env::Default());
+  FailTableCreationEnv failing(&tracked);
+  Options options = DefaultOptions();
+  options.env = &failing;
+  auto opened = DBImpl::Open(options);
+  ASSERT_TRUE(opened.ok()) << opened.status().ToString();
+  auto db = std::move(*opened);
+  bool saw_failure = false;
+  for (std::uint32_t index = 0; index < kFillerWrites; ++index) {
+    WriteBatch batch;
+    batch.Put(Key(index), Value(index));
+    if (!db->Write(WriteOptions{}, batch).ok()) {
+      saw_failure = true;
+      break;
+    }
+  }
+  db->WaitForFlush();
+  EXPECT_TRUE(saw_failure);
+  const std::uint64_t before_close = tracked.sync_count();
+  EXPECT_TRUE(db->Close().IsIoError());
+  EXPECT_GT(tracked.sync_count(), before_close);
 }
 
 TEST_F(FlushTest, MemtableDeleteShadowsAFlushedValue) {

@@ -32,6 +32,7 @@ void PrintUsage(std::ostream& out) {
       << "  put <db> <key> <value> [--sync]   Set a key (--sync: durable against power loss)\n"
       << "  get <db> <key>                    Print a key's value (exit 1 if absent)\n"
       << "  delete <db> <key> [--sync]        Remove a key\n"
+      << "  dump-sst <file>                   Print an SSTable's entries\n"
       << "  version                           Print the library version\n"
       << "  help                              Print this message\n";
 }

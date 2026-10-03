@@ -13,12 +13,12 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 4 of 15 complete: SSTables (file format, builder, reader, fuzzed).**
+> **Status: Phase 5 of 15 in progress: MANIFEST, versions, and memtable flush.**
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
-> by a clean `Close`) survives power loss. Each claim is backed by a crash test and a negative
-> control; see [docs/durability.md](docs/durability.md). All data currently lives in memory and
-> the write-ahead log; the SSTable format is built and tested, and flushing into it arrives in phase 5. See [the roadmap](docs/roadmap.md) and the
+> by a clean `Close`) survives power loss. Each claim is backed by crash tests;
+> see [docs/durability.md](docs/durability.md). Full memtables flush to level-0 SSTables in the
+> background, and recovery flushes replayed logs to SSTables. See [the roadmap](docs/roadmap.md) and the
 > [build journal](docs/journal/README.md).
 > Nothing in this README claims a capability that is not yet implemented and tested.
 
@@ -37,11 +37,11 @@ Every component in this engine exists because of a specific constraint:
 | A write must survive `SIGKILL` | write-ahead log, `fdatasync`, replay on open |
 | Writes must not pay for a random disk seek | in-memory ordered memtable |
 | Memory is finite | flush the memtable to an immutable sorted file (SSTable) |
-| Finding a key must not scan every file | sparse index + Bloom filter per SSTable |
-| Files and dead versions accumulate | leveled compaction |
+| Finding a key must not scan every block | sparse index per SSTable; Bloom filters are planned for phase 6 |
+| Files and dead versions accumulate | leveled compaction (planned for phase 7) |
 | A restart must know which files are the database | MANIFEST log + atomic `CURRENT` publish |
-| Readers must not fault on a file compaction just deleted | refcounted immutable versions |
-| Many threads, one disk | group-commit writer queue, lock-free reads of immutable state |
+| Readers must not fault on a deleted table | refcounted immutable versions |
+| Many threads, one disk | concurrent reads and writes; group commit is planned for phase 9 |
 
 ## Architecture
 

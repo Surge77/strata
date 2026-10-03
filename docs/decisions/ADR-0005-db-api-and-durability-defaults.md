@@ -75,3 +75,7 @@ Three amendments follow:
 - **Decision 5 is refined.** Damage at the *end of the newest log*, with no valid record after
   it, is a torn write (a `sync = false` power loss can leave zero-filled blocks there), not
   corruption. Damage followed by valid records still fails closed.
+
+The phase-3 consolidation mechanism was superseded in phase 5: recovery now flushes replayed
+entries to a level-0 SSTable and commits that table with the new log number in one MANIFEST edit.
+The clean-close sync guarantee and WAL corruption policy remain in force.

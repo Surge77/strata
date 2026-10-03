@@ -302,7 +302,7 @@ TEST_F(DBPowerLoss, AFailedSyncStopsAllFurtherWrites) {
   env_.SetSyncFailure(false);
   EXPECT_TRUE(db.Put("after", "x").IsIoError()) << "the write path must stay stopped";
   EXPECT_TRUE(db.Get("before").ok()) << "reads keep working";
-  ASSERT_TRUE(db.Close().ok());
+  EXPECT_TRUE(db.Close().IsIoError()) << "close must report the earlier write failure";
 
   DB reopened;
   Open(&reopened);

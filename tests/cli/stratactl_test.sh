@@ -31,4 +31,15 @@ set -e
 [[ $code -eq 2 ]] || fail "missing argument should exit 2, got $code"
 
 [[ -n "$("$STRATACTL" version)" ]] || fail "version"
+
+# Opening for get flushes the replayed log into a real level-0 SSTable.
+DUMP_DB="$(dirname "$DB")/dump-db"
+"$STRATACTL" put "$DUMP_DB" dump:key dump-value
+[[ "$("$STRATACTL" get "$DUMP_DB" dump:key)" == "dump-value" ]] || fail "reopen before dump"
+sst_files=("$DUMP_DB"/*.sst)
+[[ ${#sst_files[@]} -gt 0 && -f ${sst_files[0]} ]] || fail "recovery did not create an SSTable"
+dump="$("$STRATACTL" dump-sst "${sst_files[0]}")" || fail "dump-sst failed"
+[[ "$dump" == *"'dump:key'"*"PUT => 'dump-value'"* ]] || fail "dump-sst missed the key"
+[[ "$dump" == *" entries" ]] || fail "dump-sst missed its entry count"
+
 echo "stratactl: all checks passed"

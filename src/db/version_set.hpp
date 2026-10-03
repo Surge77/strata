@@ -86,7 +86,7 @@ class VersionSet {
  private:
   Status ApplyTo(const Version& base, const VersionEdit& edit, Version* result) const;
   Status WriteSnapshot(log::Writer* writer) const;
-  Status SetCurrentFile(std::uint64_t manifest_number);
+  Status SetCurrentFile(std::uint64_t manifest_number, bool* did_rename);
 
   const std::string dbname_;
   Env* const env_;

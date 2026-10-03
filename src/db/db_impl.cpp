@@ -500,8 +500,9 @@ Status DBImpl::Close() {
     // A clean close leaves every acknowledged write durable, whatever its
     // WriteOptions: one fdatasync, paid once per session. An unflushed
     // memtable is simply replayed from the log next time.
-    if (background_error_.ok()) {
-      status = log_file_->Sync();
+    status = log_file_->Sync();
+    if (status.ok() && !background_error_.ok()) {
+      status = background_error_;
     }
     log_ = nullptr;
     const Status closed = log_file_->Close();
