@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-05-version-flush`. Gate: flushed data survives restart and power loss
 at every publish point; obsolete files are garbage-collected.
 
-> **Status: implementation and gate complete (2026-10-03); merge and tag pending.**
+> **Status: merged into `main` at `0bec357` and tagged `phase-05` (2026-10-03).**
 
 ## Roles and methods
 
@@ -103,4 +103,4 @@ Branch `feature/phase-05-version-flush`. The phase gate work is complete:
 5. Independent review of phases 4 and 5; both HIGH/MEDIUM findings fixed and regression-tested.
 6. Plain, ASan/UBSan, TSan, and ≥ 90% line coverage gates.
 
-Next: merge this branch with `git merge --no-ff` into `main`, tag `phase-05`, then start phase 6.
+Next: phase 6 continues on `feature/phase-06-read-path`.
