@@ -2,7 +2,7 @@
 
 This page says exactly what survives what. Every guarantee listed here has a test that fails
 if the guarantee breaks, and the test is named next to it. A guarantee without a test is not
-listed. Current as of **phase 3**: one memtable, all data in the write-ahead log.
+listed. Current as of **phase 5**: memtables flush to level-0 SSTables recorded in the MANIFEST.
 
 ## The short version
 
@@ -39,6 +39,7 @@ could then take away.
 | Guarantee | Test |
 |---|---|
 | Every acknowledged write survives a real `SIGKILL`, at random moments, across repeated kills | `DBCrash.SigkillNeverLosesAnAcknowledgedWrite` |
+| Flush and MANIFEST publication recover to an acknowledged write prefix after power loss at every mutating filesystem operation | `FlushCrashTest.EveryCrashPointRecoversAnAcknowledgedPrefix` |
 | Every `sync = true` write survives repeated simulated power losses | `DBPowerLoss.SyncedWritesSurviveAcrossRepeatedOutages` |
 | The first synced write after `Open` survives (the new log's *name* is made durable) | `DBPowerLoss.TheFirstSyncedWriteAfterOpenSurvives` |
 | Losing unsynced writes never loses a synced one or leaves an unopenable database | `DBPowerLoss.LosingUnsyncedWritesLeavesSyncedOnesIntact` |
@@ -62,9 +63,9 @@ crash tests were rerun, and at least one had to fail (phase 3 journal):
 | `SyncDir` after creating a log | 3 power-loss tests |
 | `fdatasync` for `sync = true` | 3 power-loss tests |
 | the log writer's per-record `Flush` | the `SIGKILL` test |
-| recovery's consolidation (entirely) | the resurrection test |
-| consolidation's `fdatasync` | `DataSurvivesPowerLossRightAfterRecovery` |
-| consolidation's `SyncDir` | the resurrection test |
+| phase-3 recovery consolidation (superseded by the phase-5 flush) | the resurrection test |
+| phase-3 consolidation's `fdatasync` (superseded) | `DataSurvivesPowerLossRightAfterRecovery` |
+| phase-3 consolidation's `SyncDir` (superseded) | the resurrection test |
 | `Close`'s `fdatasync` | `CleanCloseMakesUnsyncedWritesDurable` |
 
 ## The power-loss model
@@ -94,10 +95,10 @@ covers every outcome a real power loss can produce.
 
 | What recovery finds | What happens |
 |---|---|
-| Nothing wrong | every log is replayed in order, then **consolidated**: rewritten into one new log, synced, and the old logs deleted |
+| Nothing wrong | every log not yet covered by the MANIFEST is replayed in order; recovered entries are flushed to a level-0 SSTable and committed with the new log number in one MANIFEST edit |
 | A record cut off at the very end of a log | discarded quietly: it was never acknowledged |
 | Damage at the end of the *newest* log with no valid record after it | treated as a torn write (e.g. zero-filled blocks left by power loss), discarded, logged |
 | A bad checksum, bad length, or undecodable batch followed by valid records | `Open` fails with `Corruption` and names the file |
-| A batch whose sequence numbers were all recovered already | skipped as a duplicate (left by an interrupted consolidation) |
+| A batch whose sequence numbers are already committed in the MANIFEST | skipped as a duplicate (the old log may outlive its flush) |
 | The same, with `Options::ignore_wal_corruption = true` | the damaged region is skipped, and each skip is logged in `LOG` |
 | An I/O error reading a log | `Open` fails, even in salvage mode |

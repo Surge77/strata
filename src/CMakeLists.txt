@@ -1,11 +1,15 @@
 # Sources are listed explicitly rather than globbed so that adding a file is a
 # reviewable change and CMake never silently misses one after a rebase.
 add_library(strata STATIC
+    db/builder.cpp
     db/db.cpp
     db/db_impl.cpp
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp
+    db/table_cache.cpp
+    db/version_edit.cpp
+    db/version_set.cpp
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp

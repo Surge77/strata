@@ -30,4 +30,5 @@ function(strata_add_fuzzer name)
 endfunction()
 
 strata_add_fuzzer(log_reader_fuzz)
+strata_add_fuzzer(manifest_fuzz)
 strata_add_fuzzer(sstable_fuzz)

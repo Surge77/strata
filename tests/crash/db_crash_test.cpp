@@ -74,7 +74,7 @@ Op OpAt(std::uint32_t index) {
 }
 
 // put/delete -> kill -9 -> reopen -> get, at random moments, five times over
-// one database so recovery also replays (and consolidates) what earlier kills
+// one database so recovery also replays (and flushes) what earlier kills
 // left. Every acknowledged operation must be reflected; the single operation
 // in flight when the signal landed may or may not be.
 TEST(DBCrash, SigkillNeverLosesAnAcknowledgedWrite) {
@@ -219,9 +219,10 @@ TEST_F(DBPowerLoss, RecoveryNeverResurrectsAWriteBehindANewerSyncedOne) {
   EXPECT_TRUE(final.Get("k").status().IsNotFound()) << "k was resurrected under a newer write";
 }
 
-// Open consolidates the recovered logs into a new one and deletes the old
-// ones. If the copy were not synced before the deletions became durable, a
-// power loss straight after Open would lose the entire database.
+// Open flushes the recovered logs to a level-0 table, commits it through the
+// MANIFEST and deletes the old logs. If the table or the commit were not
+// durable before the deletions, a power loss straight after Open would lose
+// the entire database.
 TEST_F(DBPowerLoss, DataSurvivesPowerLossRightAfterRecovery) {
   {
     DB db;
@@ -232,7 +233,7 @@ TEST_F(DBPowerLoss, DataSurvivesPowerLossRightAfterRecovery) {
     ASSERT_TRUE(db.Close().ok());  // a clean close syncs the log
   }
   DB recovered;
-  Open(&recovered);  // replays, consolidates, deletes the old log
+  Open(&recovered);  // replays, flushes, deletes the old log
   CrashAndReboot(&recovered);
 
   DB final;
@@ -301,7 +302,7 @@ TEST_F(DBPowerLoss, AFailedSyncStopsAllFurtherWrites) {
   env_.SetSyncFailure(false);
   EXPECT_TRUE(db.Put("after", "x").IsIoError()) << "the write path must stay stopped";
   EXPECT_TRUE(db.Get("before").ok()) << "reads keep working";
-  ASSERT_TRUE(db.Close().ok());
+  EXPECT_TRUE(db.Close().IsIoError()) << "close must report the earlier write failure";
 
   DB reopened;
   Open(&reopened);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace strata {
@@ -26,6 +27,10 @@ struct Options {
   // A torn record at the very end of the log is never corruption: it is what
   // a crash leaves behind, and it is always discarded.
   bool ignore_wal_corruption = false;
+
+  // Bytes of writes buffered in memory before they are flushed to an SSTable.
+  // Larger means fewer, bigger tables and more to replay after a crash.
+  std::size_t write_buffer_size = 4 * 1024 * 1024;
 
   // Filesystem access. Null means Env::Default(). Tests pass a
   // FaultInjectionEnv here to simulate crashes. Must outlive the DB.
