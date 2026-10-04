@@ -8,11 +8,11 @@
 namespace strata::table {
 namespace {
 
-// An iterator over a block that owns the block, so data-block iterators handed
-// out by the table keep their bytes alive.
+// An iterator over a block that shares ownership of the block, so data-block
+// iterators keep their bytes alive even after the block cache evicts them.
 class OwningBlockIterator final : public Iterator {
  public:
-  OwningBlockIterator(std::unique_ptr<Block> block, const Comparator* comparator)
+  OwningBlockIterator(std::shared_ptr<const Block> block, const Comparator* comparator)
       : block_(std::move(block)), it_(block_->NewIterator(comparator)) {}
 
   [[nodiscard]] bool Valid() const override { return it_->Valid(); }
@@ -26,7 +26,7 @@ class OwningBlockIterator final : public Iterator {
   [[nodiscard]] Status status() const override { return it_->status(); }
 
  private:
-  std::unique_ptr<Block> block_;
+  std::shared_ptr<const Block> block_;
   std::unique_ptr<Iterator> it_;
 };
 
@@ -227,9 +227,26 @@ Result<std::unique_ptr<Iterator>> Table::BlockIterator(Slice index_value) const 
   BlockHandle handle;
   Slice input = index_value;
   STRATA_RETURN_IF_ERROR(handle.DecodeFrom(&input));
-  STRATA_ASSIGN_OR_RETURN(auto block, ReadAndParseBlock(*file_, file_size_, handle));
+  STRATA_ASSIGN_OR_RETURN(auto block, ReadDataBlock(handle));
   return std::unique_ptr<Iterator>(
       std::make_unique<OwningBlockIterator>(std::move(block), options_.comparator));
+}
+
+Result<std::shared_ptr<const Block>> Table::ReadDataBlock(const BlockHandle& handle) const {
+  BlockCache* const cache = options_.block_cache;
+  const BlockCacheKey key{.cache_id = options_.cache_id, .offset = handle.offset()};
+  if (cache != nullptr) {
+    if (auto cached = cache->Lookup(key)) {
+      return cached;
+    }
+  }
+  STRATA_ASSIGN_OR_RETURN(auto parsed, ReadAndParseBlock(*file_, file_size_, handle));
+  std::shared_ptr<const Block> block = std::move(parsed);
+  if (cache == nullptr) {
+    return block;
+  }
+  const std::size_t charge = block->size();
+  return cache->Insert(key, std::move(block), charge);
 }
 
 std::unique_ptr<Iterator> Table::NewIterator() const {

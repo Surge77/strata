@@ -65,6 +65,9 @@ class Table {
 
   // Reads the data block an index entry points to.
   Result<std::unique_ptr<Iterator>> BlockIterator(Slice index_value) const;
+  // Returns a data block from the block cache, or reads, verifies, and
+  // caches it.
+  Result<std::shared_ptr<const Block>> ReadDataBlock(const BlockHandle& handle) const;
 
   const TableOptions options_;
   const std::unique_ptr<RandomAccessFile> file_;
