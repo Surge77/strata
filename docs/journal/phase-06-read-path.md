@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-06-read-path`. Gate: measure negative lookups with
 the Bloom filter on and off.
 
-> **Status: implementation and gate complete (2026-10-04); merge and tag pending.**
+> **Status: merged into `main` at `d8b8ab9` and tagged `phase-06` (2026-10-04).**
 
 ## Starting point
 
@@ -126,5 +126,4 @@ Machine: Intel Core i5-12450H (8 logical CPUs), 10 GiB RAM, WSL2 kernel
 
 ## Next
 
-Merge this branch into `main` with `git merge --no-ff`, tag `phase-06`, then
-start phase 7 (compaction).
+Phase 7 (compaction) starts on a new feature branch.
