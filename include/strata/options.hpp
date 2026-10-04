@@ -32,6 +32,11 @@ struct Options {
   // Larger means fewer, bigger tables and more to replay after a crash.
   std::size_t write_buffer_size = 4 * 1024 * 1024;
 
+  // Write a Bloom filter (about 10 bits per key) into each new SSTable, so a
+  // lookup for a missing key usually skips that table without reading it.
+  // Tables written either way stay readable whatever this is set to.
+  bool bloom_filter = true;
+
   // SSTables kept open at once. Each open table holds a file descriptor and
   // its index and filter in memory. Reads stay correct beyond this limit; the
   // least recently used table is closed and reopened when next needed. 0

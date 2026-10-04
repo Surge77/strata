@@ -6,7 +6,7 @@
 namespace strata {
 
 Status BuildTable(const std::string& dbname, Env* env, const InternalKeyComparator* comparator,
-                  TableCache* tables, Iterator* source, FileMetaData* meta) {
+                  bool use_filter, TableCache* tables, Iterator* source, FileMetaData* meta) {
   meta->file_size = 0;
   source->SeekToFirst();
   if (!source->Valid()) {
@@ -16,7 +16,7 @@ Status BuildTable(const std::string& dbname, Env* env, const InternalKeyComparat
   const std::string file_name = TableFileName(dbname, meta->number);
   Status status = [&]() -> Status {
     STRATA_ASSIGN_OR_RETURN(auto file, env->NewWritableFile(file_name));
-    table::TableBuilder builder({.comparator = comparator, .use_filter = true}, file.get());
+    table::TableBuilder builder({.comparator = comparator, .use_filter = use_filter}, file.get());
     meta->smallest.assign(source->key());
     for (; source->Valid(); source->Next()) {
       meta->largest.assign(source->key());

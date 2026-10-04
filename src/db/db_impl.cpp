@@ -281,8 +281,8 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   if (lock != nullptr) {
     lock->unlock();
   }
-  Status status =
-      BuildTable(dbname_, env_, &internal_comparator_, table_cache_.get(), it.get(), &meta);
+  Status status = BuildTable(dbname_, env_, &internal_comparator_, options_.bloom_filter,
+                             table_cache_.get(), it.get(), &meta);
   if (lock != nullptr) {
     lock->lock();
   }

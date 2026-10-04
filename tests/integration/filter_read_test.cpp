@@ -77,4 +77,28 @@ TEST(FilterReadTest, DatabaseMissesAvoidSstableBlockReads) {
   ASSERT_EQ(*reopened.Get(Key(100)), "value");
 }
 
+TEST(FilterReadTest, DisabledFilterMakesMissesReadTheTable) {
+  strata::test::TestDir dir("filter_off_read");
+  CountingEnv env;
+  const strata::Options options{
+      .path = dir.File("db"), .bloom_filter = false, .block_cache_size = 0, .env = &env};
+  {
+    strata::DB db;
+    ASSERT_TRUE(strata::DB::Open(options, &db).ok());
+    for (int index = 0; index < 200; index += 2) {
+      ASSERT_TRUE(db.Put(Key(index), "value").ok());
+    }
+    ASSERT_TRUE(db.Close().ok());
+  }
+
+  strata::DB reopened;
+  ASSERT_TRUE(strata::DB::Open(options, &reopened).ok());
+  env.ResetReads();
+  constexpr int kMisses = 99;
+  for (int index = 1; index < 199; index += 2) {
+    EXPECT_TRUE(reopened.Get(Key(index)).status().IsNotFound()) << index;
+  }
+  EXPECT_GE(env.reads(), kMisses) << "without a filter every miss reads a data block";
+}
+
 }  // namespace
