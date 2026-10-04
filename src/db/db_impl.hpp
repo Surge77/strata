@@ -76,6 +76,8 @@ class DBImpl {
   std::unique_ptr<FileLock> db_lock_;
   std::unique_ptr<Logger> owned_info_log_;
   Logger* info_log_ = nullptr;
+  // Declared before table_cache_, whose tables point into it.
+  std::unique_ptr<table::BlockCache> block_cache_;
   std::unique_ptr<TableCache> table_cache_;
 
   std::mutex mutex_;

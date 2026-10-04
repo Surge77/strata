@@ -32,6 +32,16 @@ struct Options {
   // Larger means fewer, bigger tables and more to replay after a crash.
   std::size_t write_buffer_size = 4 * 1024 * 1024;
 
+  // SSTables kept open at once. Each open table holds a file descriptor and
+  // its index and filter in memory. Reads stay correct beyond this limit; the
+  // least recently used table is closed and reopened when next needed. 0
+  // keeps none open, so every lookup reopens its table.
+  std::size_t max_open_tables = 1000;
+
+  // Bytes of data blocks cached in memory, shared by all tables. A hit skips
+  // the file read and the checksum check. 0 disables the cache.
+  std::size_t block_cache_size = 8 * 1024 * 1024;
+
   // Filesystem access. Null means Env::Default(). Tests pass a
   // FaultInjectionEnv here to simulate crashes. Must outlive the DB.
   Env* env = nullptr;

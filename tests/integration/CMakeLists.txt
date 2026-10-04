@@ -1,3 +1,4 @@
 strata_add_test(db_test SUITE integration SOURCES db_test.cpp)
 strata_add_test(flush_test SUITE integration SOURCES flush_test.cpp)
 strata_add_test(filter_read_test SUITE integration SOURCES filter_read_test.cpp)
+strata_add_test(cache_read_test SUITE integration SOURCES cache_read_test.cpp)

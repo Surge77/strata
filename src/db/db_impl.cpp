@@ -120,7 +120,9 @@ Status DBImpl::OpenDatabase() {
   // another process has the database open.
   STRATA_ASSIGN_OR_RETURN(db_lock_, env_->LockFile(LockFileName(dbname_)));
 
-  table_cache_ = std::make_unique<TableCache>(dbname_, env_, &internal_comparator_);
+  block_cache_ = std::make_unique<table::BlockCache>(options_.block_cache_size);
+  table_cache_ = std::make_unique<TableCache>(dbname_, env_, &internal_comparator_,
+                                              options_.max_open_tables, block_cache_.get());
   versions_ = std::make_unique<VersionSet>(dbname_, env_, &internal_comparator_);
   bool existing = false;
   STRATA_RETURN_IF_ERROR(versions_->Recover(&existing));
