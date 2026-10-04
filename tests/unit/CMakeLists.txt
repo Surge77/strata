@@ -10,6 +10,7 @@ strata_add_test(fault_injection_env_test SUITE unit SOURCES fault_injection_env_
 strata_add_test(filename_test SUITE unit SOURCES filename_test.cpp)
 strata_add_test(histogram_test SUITE unit SOURCES histogram_test.cpp)
 strata_add_test(log_test     SUITE unit SOURCES log_test.cpp)
+strata_add_test(lru_cache_test SUITE unit SOURCES lru_cache_test.cpp)
 strata_add_test(logger_test  SUITE unit SOURCES logger_test.cpp)
 strata_add_test(memtable_test SUITE unit SOURCES memtable_test.cpp)
 strata_add_test(skiplist_test SUITE unit SOURCES skiplist_test.cpp)
