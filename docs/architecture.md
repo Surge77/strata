@@ -34,8 +34,16 @@ from newest to oldest. A deletion marker stops the search and returns
 `NotFound`. The held `Version` keeps its table files live while the read runs.
 New tables use a whole-table Bloom filter to skip data-block reads for definite
 misses. Tables created before phase 6 have no filter and use the normal read
-path. `TableCache` currently keeps opened tables without a size bound; cache
-limits are still part of phase 6.
+path. `Options::bloom_filter` turns the filter off for new tables.
+
+Two LRU caches sit under reads. `TableCache` keeps up to
+`Options::max_open_tables` tables open. Each table holds its index and filter
+in memory, so a lookup does not reread them. A shared block cache holds up to
+`Options::block_cache_size` bytes of parsed, checksum-verified data blocks,
+keyed by table file number and block offset. Both caches hand out
+`shared_ptr`s, so evicting an entry never frees a table or block that a reader
+is still using. A closed table can always be reopened, because obsolete-file
+cleanup deletes only files that no live `Version` references.
 
 ## Recovery and publication
 
