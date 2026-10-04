@@ -1,0 +1,4 @@
+# Benchmarks link the engine's internals (for Histogram), so they see src/.
+add_executable(negative_lookup_bench negative_lookup_bench.cpp)
+target_include_directories(negative_lookup_bench PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(negative_lookup_bench PRIVATE strata::strata strata_warnings)

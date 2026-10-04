@@ -6,14 +6,11 @@ namespace strata {
 
 Result<std::shared_ptr<const table::Table>> TableCache::Find(std::uint64_t number,
                                                              std::uint64_t file_size) {
-  {
-    const std::lock_guard<std::mutex> guard(mutex_);
-    if (const auto found = tables_.find(number); found != tables_.end()) {
-      return found->second;
-    }
+  if (auto cached = tables_.Lookup(number)) {
+    return cached;
   }
-  // Opened outside the lock: it does I/O. Two threads may race to open the
-  // same table; the loser's copy is simply dropped.
+  // Opened outside any lock: it does I/O. Two threads may race to open the
+  // same table; Insert keeps the first copy and the loser's is dropped.
   const std::string file_name = TableFileName(dbname_, number);
   auto file = env_->NewRandomAccessFile(file_name);
   if (file.status().IsNotFound()) {
@@ -22,16 +19,20 @@ Result<std::shared_ptr<const table::Table>> TableCache::Find(std::uint64_t numbe
     return Status::Corruption(file_name + ": table referenced by the MANIFEST is missing");
   }
   STRATA_RETURN_IF_ERROR(file.status());
+  // File numbers are never reused within a process, so they are safe block
+  // cache ids.
   STRATA_ASSIGN_OR_RETURN(
-      auto opened, table::Table::Open({.comparator = comparator_}, std::move(*file), file_size));
+      auto opened, table::Table::Open(
+                       {.comparator = comparator_, .block_cache = block_cache_, .cache_id = number},
+                       std::move(*file), file_size));
   std::shared_ptr<const table::Table> table = std::move(opened);
-  const std::lock_guard<std::mutex> guard(mutex_);
-  return tables_.try_emplace(number, std::move(table)).first->second;
+  return tables_.Insert(number, std::move(table), kTableCharge);
 }
 
+// The deleted table's cached blocks are left to age out of the block cache:
+// its id is never reused, so they can never be served again.
 void TableCache::Evict(std::uint64_t number) {
-  const std::lock_guard<std::mutex> guard(mutex_);
-  tables_.erase(number);
+  tables_.Erase(number);
 }
 
 }  // namespace strata

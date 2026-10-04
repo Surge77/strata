@@ -6,8 +6,10 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "table/block_builder.hpp"
+#include "table/block_cache.hpp"
 #include "table/format.hpp"
 #include "util/comparator.hpp"
 
@@ -19,6 +21,14 @@ struct TableOptions {
   // A data block is cut after the entry that brings it past this size.
   std::size_t block_size = 4096;
   int block_restart_interval = 16;
+  // Store a whole-table Bloom filter over the user part of internal keys.
+  bool use_filter = false;
+  // Reader only. Data blocks are looked up here before the file is read.
+  // Null means no caching. Must outlive the table.
+  BlockCache* block_cache = nullptr;
+  // Reader only. Distinguishes this table's blocks in a shared block cache;
+  // every table sharing one cache needs a different id.
+  std::uint64_t cache_id = 0;
 };
 
 // Writes an SSTable (docs/format/sstable.md) to a file, one key at a time, in
@@ -70,6 +80,7 @@ class TableBuilder {
   BlockBuilder index_block_;
   std::string last_key_;
   std::uint64_t num_entries_ = 0;
+  std::vector<std::uint64_t> filter_hashes_;
   bool closed_ = false;
 
   // The index entry for a data block is added only when the *next* key

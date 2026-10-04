@@ -15,6 +15,7 @@ add_library(strata STATIC
     log/log_writer.cpp
     table/block.cpp
     table/block_builder.cpp
+    table/bloom_filter.cpp
     table/format.cpp
     table/table.cpp
     table/table_builder.cpp

@@ -19,8 +19,8 @@ namespace strata {
 // through `tables` as a final check that it reads back.
 //
 // An empty source produces no file (meta->file_size stays 0). On any failure
-// the partial file is deleted.
+// the partial file is deleted. `use_filter` writes a user-key Bloom filter.
 Status BuildTable(const std::string& dbname, Env* env, const InternalKeyComparator* comparator,
-                  TableCache* tables, Iterator* source, FileMetaData* meta);
+                  bool use_filter, TableCache* tables, Iterator* source, FileMetaData* meta);
 
 }  // namespace strata

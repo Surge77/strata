@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "db/dbformat.hpp"
 #include "support/string_file.hpp"
 #include "table/table.hpp"
 #include "table/table_builder.hpp"
@@ -26,6 +27,21 @@ std::string BuildTable(int entries) {
   for (int index = 0; index < entries; ++index) {
     static_cast<void>(builder.Add("key" + std::to_string(1000 + index),
                                   std::string(static_cast<std::size_t>(index % 17), 'v')));
+  }
+  static_cast<void>(builder.Finish());
+  return contents;
+}
+
+std::string BuildFilteredTable() {
+  const strata::InternalKeyComparator comparator(strata::BytewiseComparator());
+  std::string contents;
+  strata::test::StringSink sink(&contents);
+  strata::table::TableBuilder builder({.comparator = &comparator, .use_filter = true}, &sink);
+  for (int index = 0; index < 40; ++index) {
+    std::string key;
+    strata::AppendInternalKey(&key,
+                              {"key" + std::to_string(1000 + index), 1, strata::ValueType::kValue});
+    static_cast<void>(builder.Add(key, "value"));
   }
   static_cast<void>(builder.Finish());
   return contents;
@@ -52,10 +68,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   }
   it->Seek("key1005");
   static_cast<void>((*table)->Seek("key1", [](strata::Slice, strata::Slice) {}));
+  std::string internal_target;
+  strata::AppendInternalKey(&internal_target, {"missing", 1, strata::ValueType::kValue});
+  static_cast<void>((*table)->Seek(internal_target, [](strata::Slice, strata::Slice) {}));
   static_cast<void>((*table)->ApproximateOffsetOf("key2"));
   return 0;
 }
 
 std::vector<std::string> StrataFuzzSeeds() {
-  return {BuildTable(0), BuildTable(3), BuildTable(40)};
+  return {BuildTable(0), BuildTable(3), BuildTable(40), BuildFilteredTable()};
 }

@@ -13,7 +13,7 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 5 complete; phase 6 is in progress on its feature branch.**
+> **Status: Phase 5 complete; phase 6 read path in progress.**
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
 > by a clean `Close`) survives power loss. Each claim is backed by crash tests;
@@ -37,7 +37,7 @@ Every component in this engine exists because of a specific constraint:
 | A write must survive `SIGKILL` | write-ahead log, `fdatasync`, replay on open |
 | Writes must not pay for a random disk seek | in-memory ordered memtable |
 | Memory is finite | flush the memtable to an immutable sorted file (SSTable) |
-| Finding a key must not scan every block | sparse index per SSTable; Bloom filters are planned for phase 6 |
+| Finding a key must not scan every block | sparse index and optional Bloom filter per SSTable |
 | Files and dead versions accumulate | leveled compaction (planned for phase 7) |
 | A restart must know which files are the database | MANIFEST log + atomic `CURRENT` publish |
 | Readers must not fault on a deleted table | refcounted immutable versions |

@@ -3,14 +3,16 @@
 #include <string>
 #include <utility>
 
+#include "table/bloom_filter.hpp"
+
 namespace strata::table {
 namespace {
 
-// An iterator over a block that owns the block, so data-block iterators handed
-// out by the table keep their bytes alive.
+// An iterator over a block that shares ownership of the block, so data-block
+// iterators keep their bytes alive even after the block cache evicts them.
 class OwningBlockIterator final : public Iterator {
  public:
-  OwningBlockIterator(std::unique_ptr<Block> block, const Comparator* comparator)
+  OwningBlockIterator(std::shared_ptr<const Block> block, const Comparator* comparator)
       : block_(std::move(block)), it_(block_->NewIterator(comparator)) {}
 
   [[nodiscard]] bool Valid() const override { return it_->Valid(); }
@@ -24,7 +26,7 @@ class OwningBlockIterator final : public Iterator {
   [[nodiscard]] Status status() const override { return it_->status(); }
 
  private:
-  std::unique_ptr<Block> block_;
+  std::shared_ptr<const Block> block_;
   std::unique_ptr<Iterator> it_;
 };
 
@@ -196,23 +198,55 @@ Result<std::unique_ptr<Table>> Table::Open(const TableOptions& options,
   STRATA_RETURN_IF_ERROR(footer.DecodeFrom(footer_input));
 
   STRATA_ASSIGN_OR_RETURN(auto index, ReadAndParseBlock(*file, file_size, footer.index_handle));
-  // The metaindex is empty until phase 6, but it is read and verified here so
-  // a table that opens is known to have an intact map of its meta blocks.
   STRATA_ASSIGN_OR_RETURN(auto metaindex,
                           ReadAndParseBlock(*file, file_size, footer.metaindex_handle));
-  static_cast<void>(metaindex);
+  auto meta = metaindex->NewIterator(BytewiseComparator());
+  meta->Seek(kUserBloomFilterMetaName);
+  std::optional<std::string> filter;
+  if (meta->Valid() && meta->key() == kUserBloomFilterMetaName) {
+    BlockHandle handle;
+    Slice encoded_handle = meta->value();
+    STRATA_RETURN_IF_ERROR(handle.DecodeFrom(&encoded_handle));
+    if (!encoded_handle.empty()) {
+      return Status::Corruption("filter block handle has trailing bytes");
+    }
+    STRATA_ASSIGN_OR_RETURN(std::string contents, ReadBlock(*file, file_size, handle));
+    STRATA_RETURN_IF_ERROR(BloomFilter::Validate(contents));
+    filter = std::move(contents);
+  }
+  STRATA_RETURN_IF_ERROR(meta->status());
+  if (!BloomFilter::SupportsComparator(options.comparator)) {
+    filter.reset();
+  }
 
   return std::unique_ptr<Table>(new Table(options, std::move(file), file_size, std::move(index),
-                                          footer.metaindex_handle.offset()));
+                                          footer.metaindex_handle.offset(), std::move(filter)));
 }
 
 Result<std::unique_ptr<Iterator>> Table::BlockIterator(Slice index_value) const {
   BlockHandle handle;
   Slice input = index_value;
   STRATA_RETURN_IF_ERROR(handle.DecodeFrom(&input));
-  STRATA_ASSIGN_OR_RETURN(auto block, ReadAndParseBlock(*file_, file_size_, handle));
+  STRATA_ASSIGN_OR_RETURN(auto block, ReadDataBlock(handle));
   return std::unique_ptr<Iterator>(
       std::make_unique<OwningBlockIterator>(std::move(block), options_.comparator));
+}
+
+Result<std::shared_ptr<const Block>> Table::ReadDataBlock(const BlockHandle& handle) const {
+  BlockCache* const cache = options_.block_cache;
+  const BlockCacheKey key{.cache_id = options_.cache_id, .offset = handle.offset()};
+  if (cache != nullptr) {
+    if (auto cached = cache->Lookup(key)) {
+      return cached;
+    }
+  }
+  STRATA_ASSIGN_OR_RETURN(auto parsed, ReadAndParseBlock(*file_, file_size_, handle));
+  std::shared_ptr<const Block> block = std::move(parsed);
+  if (cache == nullptr) {
+    return block;
+  }
+  const std::size_t charge = block->size();
+  return cache->Insert(key, std::move(block), charge);
 }
 
 std::unique_ptr<Iterator> Table::NewIterator() const {
@@ -231,6 +265,10 @@ Status Table::Seek(Slice target, const std::function<void(Slice key, Slice value
     found(it->key(), it->value());
   }
   return it->status();
+}
+
+bool Table::MayContainUserKey(Slice user_key) const noexcept {
+  return !filter_ || BloomFilter::MayContain(user_key, *filter_);
 }
 
 std::uint64_t Table::ApproximateOffsetOf(Slice key) const {

@@ -2,6 +2,8 @@
 
 #include <cassert>
 
+#include "db/dbformat.hpp"
+#include "table/bloom_filter.hpp"
 #include "util/coding.hpp"
 #include "util/crc32c.hpp"
 
@@ -20,6 +22,9 @@ TableBuilder::TableBuilder(const TableOptions& options, WritableFile* file)
       data_block_(options.comparator, options.block_restart_interval),
       index_block_(options.comparator, kIndexRestartInterval) {
   assert(options_.comparator != nullptr);
+  if (options_.use_filter && !BloomFilter::SupportsComparator(options_.comparator)) {
+    status_ = Status::InvalidArgument("Bloom filter requires bytewise internal-key comparator");
+  }
 }
 
 Status TableBuilder::Add(Slice key, Slice value) {
@@ -28,6 +33,14 @@ Status TableBuilder::Add(Slice key, Slice value) {
   if (num_entries_ > 0 && options_.comparator->Compare(key, last_key_) <= 0) {
     status_ = Status::InvalidArgument("keys must be added to a table in strictly increasing order");
     return status_;
+  }
+  if (options_.use_filter) {
+    ParsedInternalKey parsed;
+    if (!ParseInternalKey(key, &parsed)) {
+      status_ = Status::InvalidArgument("filtered table requires internal keys");
+      return status_;
+    }
+    filter_hashes_.push_back(BloomFilter::Hash(parsed.user_key));
   }
 
   if (pending_index_entry_) {
@@ -86,10 +99,16 @@ Status TableBuilder::Finish() {
   closed_ = true;
   STRATA_RETURN_IF_ERROR(status_);
 
-  // No meta blocks yet (the Bloom filter arrives in phase 6), so the
-  // metaindex is empty -- but it is always written, so readers of every
-  // version can rely on it existing.
-  BlockBuilder metaindex_block(options_.comparator, kIndexRestartInterval);
+  BlockBuilder metaindex_block(BytewiseComparator(), kIndexRestartInterval);
+  if (options_.use_filter) {
+    const std::string filter = BloomFilter::Build(filter_hashes_);
+    BlockHandle filter_handle;
+    status_ = WriteRawBlock(filter, &filter_handle);
+    STRATA_RETURN_IF_ERROR(status_);
+    std::string handle_encoding;
+    filter_handle.EncodeTo(&handle_encoding);
+    metaindex_block.Add(kUserBloomFilterMetaName, handle_encoding);
+  }
   BlockHandle metaindex_handle;
   status_ = WriteBlock(&metaindex_block, &metaindex_handle);
   STRATA_RETURN_IF_ERROR(status_);

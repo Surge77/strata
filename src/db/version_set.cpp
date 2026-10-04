@@ -54,6 +54,9 @@ Result<MemTable::LookupResult> Version::Get(const LookupKey& key, std::string* v
 
   for (const FileMetaData* file : candidates) {
     STRATA_ASSIGN_OR_RETURN(auto table, tables->Find(file->number, file->file_size));
+    if (!table->MayContainUserKey(user_key)) {
+      continue;
+    }
     MemTable::LookupResult result = MemTable::LookupResult::kNotPresent;
     STRATA_RETURN_IF_ERROR(table->Seek(key.internal_key(), [&](Slice found_key, Slice found_value) {
       ParsedInternalKey parsed;
