@@ -116,9 +116,12 @@ TEST(LruCacheTest, ConcurrentUseStaysWithinCapacity) {
     threads.emplace_back([&cache, thread] {
       for (int op = 0; op < kOperations; ++op) {
         const int key = (op * 7 + thread) % 64;
-        if (cache.Lookup(key) == nullptr) {
-          cache.Insert(key, Value(std::to_string(key)), 1);
+        auto handle = cache.Lookup(key);
+        if (handle == nullptr) {
+          handle = cache.Insert(key, Value(std::to_string(key)), 1);
         }
+        // A cache that mixed up entries under contention would fail here.
+        EXPECT_EQ(Text(handle), std::to_string(key));
       }
     });
   }

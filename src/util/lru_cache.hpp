@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -56,7 +57,14 @@ class LruCache {
       return value;
     }
     entries_.push_front(Entry{key, value, charge});
-    index_.emplace(key, entries_.begin());
+    try {
+      index_.emplace(key, entries_.begin());
+    } catch (...) {
+      // An entry in the list but not the index would later be evicted with a
+      // charge usage_ never counted, wrapping it around.
+      entries_.pop_front();
+      throw;
+    }
     usage_ += charge;
     while (usage_ > capacity_) {
       RemoveLocked(std::prev(entries_.end()));
