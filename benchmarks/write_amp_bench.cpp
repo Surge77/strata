@@ -8,8 +8,12 @@
 //
 // Each workload runs on a fresh database with default options, then flushes
 // the last memtable and waits for background compaction to finish before
-// reporting. The write-ahead log adds
-// about one more byte per user byte on top of the table figure.
+// reporting.
+//
+// WA = table bytes (flush + compaction) / user payload bytes (key + value).
+// It excludes the write-ahead log (about one more byte per payload byte) and
+// MANIFEST records. Tables prefix-compress keys, so a sequential load can come
+// in under 1. Writes/s includes any time writes spent stalled.
 //
 // Usage: write_amp_bench <scratch-dir> [writes]
 
@@ -51,7 +55,7 @@ std::vector<std::uint64_t> KeyOrder(const std::string& workload, std::size_t wri
   std::vector<std::uint64_t> order(writes);
   std::iota(order.begin(), order.end(), std::uint64_t{0});
   std::mt19937_64 random(kSeed);
-  if (workload == "fillrandom") {
+  if (workload == "fillrandom" || writes < kOverwriteKeySpaceDivisor) {
     std::shuffle(order.begin(), order.end(), random);
   } else if (workload == "overwrite") {
     std::uniform_int_distribution<std::uint64_t> pick(0, writes / kOverwriteKeySpaceDivisor - 1);
@@ -90,12 +94,12 @@ void Run(const std::filesystem::path& scratch, const std::string& workload, std:
   const auto settled = std::chrono::steady_clock::now();
 
   const strata::DBStats stats = db->GetStats();
-  const double user = static_cast<double>(stats.user_bytes_written);
+  const double user = static_cast<double>(writes) * static_cast<double>(Key(0).size() + kValueSize);
   const double tables =
       static_cast<double>(stats.flush_bytes_written + stats.compaction_bytes_written);
   const double write_seconds = std::chrono::duration<double>(written - start).count();
   const double settle_seconds = std::chrono::duration<double>(settled - written).count();
-  std::printf("%-11s %9.1f %9.1f %9.1f %7.2f %9.0f %7.1f %6llu %6llu %6llu  ", workload.c_str(),
+  std::printf("%-11s %11.1f %9.1f %9.1f %7.2f %9.0f %7.1f %6llu %6llu %6llu  ", workload.c_str(),
               user / kBytesPerMiB, static_cast<double>(stats.flush_bytes_written) / kBytesPerMiB,
               static_cast<double>(stats.compaction_bytes_written) / kBytesPerMiB, tables / user,
               static_cast<double>(writes) / write_seconds, settle_seconds,
@@ -124,7 +128,7 @@ int main(int argc, char** argv) {
   const std::size_t writes = parsed == 0 ? kDefaultWrites : static_cast<std::size_t>(parsed);
 
   std::printf("writes=%zu value=%zuB key=19B default options\n", writes, kValueSize);
-  std::printf("%-11s %9s %9s %9s %7s %9s %7s %6s %6s %6s  %s\n", "workload", "user MiB",
+  std::printf("%-11s %11s %9s %9s %7s %9s %7s %6s %6s %6s  %s\n", "workload", "payload MiB",
               "flush MiB", "comp MiB", "WA", "writes/s", "settle", "comps", "moves", "stalls",
               "tables per level");
   for (const char* workload : {"fillseq", "fillrandom", "overwrite"}) {
