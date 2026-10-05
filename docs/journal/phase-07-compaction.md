@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-07-compaction`. Gate: `CompactionDoesNotResurrectDeletedKey`
 passes, and write amplification is measured and reported.
 
-> **Status: in progress.**
+> **Status: merged into `main` and tagged `phase-07` (2026-10-06).**
 
 ## Starting point
 
@@ -64,6 +64,20 @@ assumption that their files are disjoint; nothing yet puts files there.
   (10 MiB). **New API:** `DB::GetSnapshot`, `DB::ReleaseSnapshot`,
   `ReadOptions::snapshot`. A released or foreign snapshot is
   `InvalidArgument`, never trusted.
+
+## Verification
+
+- Plain, ASan/UBSan, and TSan suites each pass **356/356** on the final code.
+  The sanitizer runs were repeated after the review fixes, with 2 build jobs
+  because the machine ran low on memory.
+- Coverage is **97.5% of lines** and 99.3% of functions under `src/` and
+  `include/`. The compaction picker is at 98%, the merge at 94%, the
+  background loop at 100%, and the merging iterator at 95%. The v1.0 release
+  gate asks for 100% on the compaction merge logic. The lines still missing
+  are the unused `SeekToLast`/`Seek`/`Prev` of the table-holding iterator and
+  the abandon-mid-table cleanup path. Phase 8's fault injection will reach
+  the cleanup path.
+- The clang-format check is clean.
 
 ## Gate: CompactionDoesNotResurrectDeletedKey
 
@@ -135,6 +149,12 @@ why a sequential load lands just under 1. Intel Core i5-12450H, WSL2 kernel
    was fixed, not the code.
 6. **Write amplification 1.74 on a sequential load**, fixed as described
    above.
+
+## Next
+
+Phase 8 (crash tests): a systematic crash matrix, including crashes in the
+middle of a compaction, model-based restart testing, and disk-full and EIO
+injection.
 
 ## Review
 
