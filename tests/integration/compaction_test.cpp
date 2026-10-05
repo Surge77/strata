@@ -23,8 +23,6 @@ namespace {
 
 using test::TestDir;
 
-constexpr int kStopWritesTrigger = 12;
-
 class CompactionTest : public ::testing::Test {
  protected:
   Options DefaultOptions() const { return Options{.path = dir_.File("db")}; }
@@ -181,12 +179,15 @@ TEST_F(CompactionTest, ValueAndTombstoneBothVanishAtTheBottom) {
 TEST_F(CompactionTest, SnapshotKeepsAnOverwrittenValueThroughCompaction) {
   Open();
   SeedLevel(2, {"k", "l"});
+  SeedLevel(1, {"k", "l"});
   const std::string big_old(10'000, 'o');
   Put("key", big_old);
   const Snapshot* snapshot = db_->GetSnapshot();
   Put("key", "new");
   Flush();
+  const std::uint64_t compactions_before = db_->GetStats().compactions;
   CompactLevel(0);
+  ASSERT_GT(db_->GetStats().compactions, compactions_before) << "a real merge, not a move";
   EXPECT_EQ(Get("key", snapshot), big_old);
   EXPECT_EQ(Get("key"), "new");
   EXPECT_GT(db_->LevelBytesForTest(1), big_old.size());
@@ -313,11 +314,11 @@ TEST_F(CompactionTest, WritesSlowDownAndStopWhenLevelZeroPilesUp) {
   options.write_buffer_size = 4 * 1024;
   Open(options);
   db_->PauseCompactionsForTest(true);
-  for (int table = 0; table < kStopWritesTrigger; ++table) {
+  for (std::size_t table = 0; table < kL0StopWritesTrigger; ++table) {
     Put("key" + std::to_string(table), "v");
     Flush();
   }
-  ASSERT_EQ(Files(0), static_cast<std::size_t>(kStopWritesTrigger));
+  ASSERT_EQ(Files(0), kL0StopWritesTrigger);
   const std::uint64_t slowdowns_before = db_->GetStats().write_slowdowns;
   Put("one more", "v");
   EXPECT_GT(db_->GetStats().write_slowdowns, slowdowns_before);
@@ -330,12 +331,73 @@ TEST_F(CompactionTest, WritesSlowDownAndStopWhenLevelZeroPilesUp) {
     }
     done = true;
   });
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
-  EXPECT_FALSE(done.load()) << "writes must stop at the stop trigger";
+  // Wait for the positive signal that the writer reached the stop, rather
+  // than inferring it from the writer not having finished yet.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (db_->GetStats().write_stops == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_GT(db_->GetStats().write_stops, 0U) << "writes must stop at the stop trigger";
+  EXPECT_FALSE(done.load());
   db_->PauseCompactionsForTest(false);
   writer.join();
   EXPECT_TRUE(done.load());
   EXPECT_EQ(Get("fill199"), std::string(100, 'f'));
+}
+
+// Regression: a writer waiting at the stop trigger was never woken by Close,
+// because only a finished flush or compaction woke it.
+TEST_F(CompactionTest, ClosingReleasesAWriterWaitingAtTheStopTrigger) {
+  Options options = DefaultOptions();
+  options.write_buffer_size = 4 * 1024;
+  Open(options);
+  db_->PauseCompactionsForTest(true);
+  for (std::size_t table = 0; table < kL0StopWritesTrigger; ++table) {
+    Put("key" + std::to_string(table), "v");
+    Flush();
+  }
+  std::atomic<bool> refused{false};
+  std::thread writer([&] {
+    for (int index = 0; index < 200; ++index) {
+      WriteBatch batch;
+      batch.Put("fill" + std::to_string(index), std::string(100, 'f'));
+      if (db_->Write(WriteOptions{}, batch).IsInvalidArgument()) {
+        refused = true;
+        return;
+      }
+    }
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (db_->GetStats().write_stops == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_GT(db_->GetStats().write_stops, 0U);
+  EXPECT_TRUE(db_->Close().ok());
+  writer.join();
+  EXPECT_TRUE(refused.load()) << "the stalled write must fail once the database closes";
+}
+
+// Levels 1 and deeper compact one table at a time once over their budget.
+TEST_F(CompactionTest, DeeperLevelsCompactAutomaticallyWhenOverBudget) {
+  Options options = DefaultOptions();
+  options.write_buffer_size = 8 * 1024;
+  options.max_file_size = 4 * 1024;
+  options.max_bytes_for_level_base = 16 * 1024;
+  Open(options);
+  std::mt19937 random(9);
+  std::map<std::string, std::string> model;
+  for (int index = 0; index < 4000; ++index) {
+    const std::string key = "key" + std::to_string(random() % 2000);
+    const std::string value = std::string(60, 'v') + std::to_string(index);
+    Put(key, value);
+    model[key] = value;
+  }
+  db_->WaitForCompactionsForTest();
+  EXPECT_GT(Files(2) + Files(3), 0U) << "data must have moved below level 1";
+  EXPECT_LE(db_->LevelBytesForTest(1), options.max_bytes_for_level_base);
+  for (const auto& [key, value] : model) {
+    EXPECT_EQ(Get(key), value) << key;
+  }
 }
 
 TEST_F(CompactionTest, CorruptInputFailsTheCompactionAndKeepsTheInputs) {

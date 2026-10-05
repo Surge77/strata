@@ -361,6 +361,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
   if (!status.ok()) {
     background_error_ = status;
+    background_done_.notify_all();  // waiters re-check background_error_
     Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
         log_number_, status.ToString());
     return status;
@@ -467,6 +468,9 @@ Status DBImpl::Close() {
     shutting_down_ = true;
   }
   background_work_.notify_all();
+  // Writers stalled in MakeRoomForWrite and test hooks wait for background
+  // work that will now never finish; wake them so they see the close.
+  background_done_.notify_all();
   if (background_thread_.joinable()) {
     background_thread_.join();
   }

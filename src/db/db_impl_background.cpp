@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "db/db_impl.hpp"
+#include "db/filename.hpp"
 
 namespace strata {
 namespace {
@@ -18,6 +19,10 @@ constexpr auto kSlowdownDelay = std::chrono::milliseconds(1);
 Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
   bool allow_delay = true;
   while (true) {
+    // Checked on every pass: Close can happen while this write waits below.
+    if (closed_) {
+      return Status::InvalidArgument("database is closed");
+    }
     if (!background_error_.ok()) {
       return background_error_;
     }
@@ -52,6 +57,7 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
 Status DBImpl::SwitchMemTable() {
   if (Status status = NewLogFile(); !status.ok()) {
     background_error_ = status;
+    background_done_.notify_all();  // waiters re-check background_error_
     return status;
   }
   imm_ = std::move(mem_);
@@ -180,6 +186,13 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
         edit.AddFile(compaction.output_level(), std::move(output));
       }
       status = versions_->LogAndApply(&edit);
+      if (!status.ok()) {
+        // Written but never committed: no version will ever reference them.
+        for (const auto& [level, output] : edit.new_files()) {
+          table_cache_->Evict(output.number);
+          static_cast<void>(env_->RemoveFile(TableFileName(dbname_, output.number)));
+        }
+      }
     }
     for (const std::uint64_t number : allocated) {
       pending_outputs_.erase(number);
