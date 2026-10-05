@@ -38,7 +38,8 @@ Every component in this engine exists because of a specific constraint:
 | Writes must not pay for a random disk seek | in-memory ordered memtable |
 | Memory is finite | flush the memtable to an immutable sorted file (SSTable) |
 | Finding a key must not scan every block | sparse index and optional Bloom filter per SSTable |
-| Files and dead versions accumulate | leveled compaction (planned for phase 7) |
+| Files and dead versions accumulate | background leveled compaction that keeps what live snapshots can see |
+| Writes can outrun compaction | level-0 write slowdown and stop triggers |
 | A restart must know which files are the database | MANIFEST log + atomic `CURRENT` publish |
 | Readers must not fault on a deleted table | refcounted immutable versions |
 | Many threads, one disk | concurrent reads and writes; group commit is planned for phase 9 |
