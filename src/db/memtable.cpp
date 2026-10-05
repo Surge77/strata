@@ -109,4 +109,10 @@ std::unique_ptr<Iterator> MemTable::NewIterator() const {
   return std::make_unique<MemTableIterator>(&table_);
 }
 
+bool MemTable::empty() const {
+  auto it = NewIterator();
+  it->SeekToFirst();
+  return !it->Valid();
+}
+
 }  // namespace strata

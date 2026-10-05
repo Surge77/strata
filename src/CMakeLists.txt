@@ -2,8 +2,11 @@
 # reviewable change and CMake never silently misses one after a rebase.
 add_library(strata STATIC
     db/builder.cpp
+    db/compaction.cpp
+    db/compaction_picker.cpp
     db/db.cpp
     db/db_impl.cpp
+    db/db_impl_background.cpp
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp
@@ -17,6 +20,7 @@ add_library(strata STATIC
     table/block_builder.cpp
     table/bloom_filter.cpp
     table/format.cpp
+    table/merger.cpp
     table/table.cpp
     table/table_builder.cpp
     util/arena.cpp

@@ -44,6 +44,10 @@ class MemTable {
   // threshold; it includes allocator overhead, not just keys and values.
   [[nodiscard]] std::size_t ApproximateMemoryUsage() const noexcept { return arena_.MemoryUsage(); }
 
+  // True if nothing has been added. An empty memtable still uses memory (its
+  // arena's first block), so this is not ApproximateMemoryUsage() == 0.
+  [[nodiscard]] bool empty() const;
+
   // For a deletion, `value` is ignored (and should be empty).
   void Add(SequenceNumber sequence, ValueType type, Slice user_key, Slice value);
 

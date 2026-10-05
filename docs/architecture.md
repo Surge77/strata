@@ -1,10 +1,9 @@
 # Architecture
 
 Strata is an embedded C++20 key-value engine. `strata::DB` is the public,
-move-only handle. `DBImpl` owns the active log and memtables, the background
-flush thread, a `VersionSet`, and a `TableCache`. The current implementation
-stores new tables at level 0. New tables carry Bloom filters; compaction is a
-later phase.
+move-only handle. `DBImpl` owns the active log and memtables, one background
+thread that flushes and compacts, a `VersionSet`, and a `TableCache`. Flushed
+tables enter level 0, and compaction moves data down through levels 1-6.
 
 ## Write path
 
@@ -27,7 +26,8 @@ made during the flush stay in the new log and are not marked as flushed.
 ## Read path
 
 `DBImpl::Get` captures the active memtable, immutable memtable, current
-`Version`, and visible sequence number under the mutex. It then releases the
+`Version`, and visible sequence number under the mutex. With
+`ReadOptions::snapshot`, the visible sequence number is the snapshot's instead. It then releases the
 mutex and checks those sources in order. The memtables support concurrent
 readers. Level-0 files can overlap, so `Version::Get` searches matching files
 from newest to oldest. A deletion marker stops the search and returns
@@ -59,6 +59,33 @@ remain authoritative. `LogAndApply` syncs the edit before making the new
 `Version` current. A new session's MANIFEST is first written and synced, then
 published through an atomically renamed `CURRENT` and a directory sync.
 See [format/manifest.md](format/manifest.md) for the byte format and ordering.
+
+## Compaction
+
+Flush and compaction share one background thread, flush first, so they never
+race on the version. Level 0 compacts once it holds 4 tables. The pick is the
+oldest table plus every level-0 table overlapping it, transitively, merged
+with the overlapping tables of level 1. Deeper levels compact one table at a
+time, round-robin, once their bytes pass `max_bytes_for_level_base` x
+10^(level-1). A single table with nothing below it is relinked one level down
+rather than rewritten.
+
+The merge (`RunCompaction`) streams the inputs through a merging iterator.
+That iterator stops at the first read error rather than skipping a table. The
+merge drops:
+- a version whose newer version is visible to every live snapshot;
+- a tombstone that every snapshot sees, when no deeper level could hold an
+  older value of its key. Dropping it earlier would bring that value back.
+
+Outputs are cut near `max_file_size`, but never between two versions of one
+user key. The tables of a level therefore never share a key, and `ApplyTo`
+rejects any version that would break this. Outputs are synced, their
+directory synced, and each reopened before the MANIFEST edit that installs
+them. A failed compaction deletes its outputs, keeps its inputs, and stops
+further writes, as a failed flush does.
+
+Writes are delayed 1 ms (once) when level 0 reaches 8 tables. When it reaches
+12, a write that needs a new memtable waits for compaction.
 
 ## File lifecycle
 

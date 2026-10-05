@@ -31,6 +31,15 @@ class Version {
     return files_[static_cast<std::size_t>(level)];
   }
 
+  // Total size of the tables in `level`.
+  [[nodiscard]] std::uint64_t LevelBytes(int level) const {
+    std::uint64_t bytes = 0;
+    for (const FileMetaData& file : files(level)) {
+      bytes += file.file_size;
+    }
+    return bytes;
+  }
+
   // Finds the newest version of key.user_key() at or below its sequence
   // number in this Version's tables, with the same three outcomes as the
   // memtable. Level-0 tables may overlap, so they are searched newest first;

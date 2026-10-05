@@ -219,4 +219,56 @@ TEST_F(VersionSetTest, FailedCurrentDirectorySyncKeepsTheRenamedManifest) {
   EXPECT_EQ(recovered->log_number(), 1U);
 }
 
+TEST_F(VersionSetTest, OverlappingFilesInADeeperLevelAreRejected) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  VersionEdit edit;
+  edit.AddFile(1, File(10, "a", "m"));
+  edit.AddFile(1, File(11, "k", "z"));
+  EXPECT_TRUE(versions->LogAndApply(&edit).IsCorruption());
+  EXPECT_TRUE(versions->current()->files(1).empty()) << "a rejected edit changes nothing";
+}
+
+TEST_F(VersionSetTest, FilesSharingABoundaryUserKeyAreRejected) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  VersionEdit edit;
+  edit.AddFile(2, File(10, "a", "m"));
+  edit.AddFile(2, File(11, "m", "z"));
+  EXPECT_TRUE(versions->LogAndApply(&edit).IsCorruption());
+}
+
+TEST_F(VersionSetTest, OverlappingLevelZeroFilesAreAllowed) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  VersionEdit edit;
+  edit.AddFile(0, File(10, "a", "m"));
+  edit.AddFile(0, File(11, "k", "z"));
+  EXPECT_TRUE(versions->LogAndApply(&edit).ok());
+}
+
+TEST_F(VersionSetTest, RemovingAFileThatIsNotThereIsRejected) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  VersionEdit edit;
+  edit.RemoveFile(1, 99);
+  EXPECT_TRUE(versions->LogAndApply(&edit).IsCorruption());
+}
+
+TEST_F(VersionSetTest, LevelBytesSumFileSizes) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  VersionEdit edit;
+  edit.AddFile(1, File(10, "a", "c"));
+  edit.AddFile(1, File(11, "d", "f"));
+  ASSERT_TRUE(versions->LogAndApply(&edit).ok());
+  EXPECT_EQ(versions->current()->LevelBytes(1), 200U);
+  EXPECT_EQ(versions->current()->LevelBytes(2), 0U);
+}
+
 }  // namespace

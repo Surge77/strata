@@ -117,6 +117,23 @@ class FlushTest : public ::testing::Test {
   std::uint32_t filler_ = 0;
 };
 
+// Regression: an empty memtable's own overhead is larger than this buffer, so
+// writes once rotated empty memtables forever and never made progress.
+TEST_F(FlushTest, WriteBufferSmallerThanAnEmptyMemtableStillMakesProgress) {
+  Options options = DefaultOptions();
+  options.write_buffer_size = 1;
+  auto opened = DBImpl::Open(options);
+  ASSERT_TRUE(opened.ok()) << opened.status().ToString();
+  db_ = std::move(*opened);
+  for (std::uint32_t index = 0; index < 10; ++index) {
+    Put(Key(index), Value(index));
+  }
+  db_->WaitForFlush();
+  for (std::uint32_t index = 0; index < 10; ++index) {
+    EXPECT_EQ(Get(Key(index)), Value(index));
+  }
+}
+
 TEST_F(FlushTest, FullMemtableIsFlushedToATableAndStaysReadable) {
   Open();
   constexpr std::uint32_t kKeys = 2000;

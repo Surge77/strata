@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace strata {
 
 class Env;
 class Logger;
+class Snapshot;
 
 // How to open a database. Designed for designated initialisers:
 //
@@ -47,6 +49,15 @@ struct Options {
   // the file read and the checksum check. 0 disables the cache.
   std::size_t block_cache_size = 8 * 1024 * 1024;
 
+  // Compaction cuts its output into tables of about this many bytes. A table
+  // can run over when one key has many versions held by snapshots, because
+  // all versions of a key always stay in one table.
+  std::size_t max_file_size = 2 * 1024 * 1024;
+
+  // Bytes level 1 may hold before compaction moves data into level 2. Each
+  // deeper level may hold 10 times more than the one above it.
+  std::uint64_t max_bytes_for_level_base = 10 * 1024 * 1024;
+
   // Filesystem access. Null means Env::Default(). Tests pass a
   // FaultInjectionEnv here to simulate crashes. Must outlive the DB.
   Env* env = nullptr;
@@ -65,7 +76,11 @@ struct WriteOptions {
   bool sync = false;
 };
 
-// Per-read options. Snapshots arrive in phase 7.
-struct ReadOptions {};
+// Per-read options.
+struct ReadOptions {
+  // Read the database as it was when this snapshot was taken (see
+  // DB::GetSnapshot). Null reads the latest state.
+  const Snapshot* snapshot = nullptr;
+};
 
 }  // namespace strata

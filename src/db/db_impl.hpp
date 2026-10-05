@@ -8,31 +8,49 @@
 #include "strata/status.hpp"
 #include "strata/write_batch.hpp"
 
+#include <array>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "db/compaction.hpp"
 #include "db/dbformat.hpp"
 #include "db/memtable.hpp"
+#include "db/snapshot.hpp"
 #include "db/table_cache.hpp"
 #include "db/version_set.hpp"
 #include "log/log_writer.hpp"
 
 namespace strata {
 
+// Counters for the work the engine has done, mainly to measure write
+// amplification: bytes written to tables per byte of user data.
+struct DBStats {
+  std::uint64_t user_bytes_written = 0;   // encoded batches accepted by Write
+  std::uint64_t flush_bytes_written = 0;  // level-0 tables written by flush
+  std::uint64_t compactions = 0;
+  std::uint64_t trivial_moves = 0;
+  std::uint64_t compaction_bytes_read = 0;
+  std::uint64_t compaction_bytes_written = 0;
+  std::uint64_t write_slowdowns = 0;  // writes delayed because level 0 was long
+  std::uint64_t write_stops = 0;      // waits because level 0 was full
+};
+
 // The engine behind strata::DB.
 //
 // Writes go to the WAL, then the active memtable. When the memtable fills it
 // becomes the immutable memtable (with a fresh log for new writes) and a
 // background thread flushes it to a level-0 SSTable, committing the new
-// table through the MANIFEST. Reads check the memtable, the immutable one,
-// then the current Version's tables. Concurrency is one mutex (ADR-0004); the
-// flush does its I/O without holding it.
+// table through the MANIFEST. The same thread compacts levels whenever one is
+// over budget, flush first. Reads check the memtable, the immutable one, then
+// the current Version's tables. Concurrency is one mutex (ADR-0004); flush and
+// compaction do their I/O without holding it.
 class DBImpl {
  public:
   static Result<std::unique_ptr<DBImpl>> Open(const Options& options);
@@ -46,12 +64,24 @@ class DBImpl {
   Status Write(const WriteOptions& options, const WriteBatch& batch);
   Result<std::string> Get(const ReadOptions& options, Slice key);
 
+  const Snapshot* GetSnapshot();
+  Status ReleaseSnapshot(const Snapshot* snapshot);
+
   // Stops the background thread, syncs and closes the log. The destructor
   // releases the lock afterwards.
   Status Close();
 
-  // Test hook: blocks until no flush is pending or running.
-  void WaitForFlush();
+  [[nodiscard]] DBStats GetStats();
+
+  // Test hooks. ForTest methods may block and are not meant for production.
+  void WaitForFlush();                        // until no flush is pending or running
+  Status FlushMemTableForTest();              // flushes whatever the memtable holds
+  Status CompactLevelForTest(int level);      // all of `level` into level + 1
+  void WaitForCompactionsForTest();           // until no automatic compaction is due
+  void PauseCompactionsForTest(bool paused);  // automatic ones only
+  std::vector<FileMetaData> FilesAtLevelForTest(int level);
+  std::uint64_t LevelBytesForTest(int level);
+  void EvictTableForTest(std::uint64_t number);
 
  private:
   explicit DBImpl(const Options& options);
@@ -63,9 +93,20 @@ class DBImpl {
   // Flushes `mem` to a new level-0 table and records it in `edit`. Called with
   // mutex_ held; releases it around the I/O if `lock` is non-null.
   Status WriteLevel0Table(MemTable* mem, VersionEdit* edit, std::unique_lock<std::mutex>* lock);
+  // The rest of these are called with mutex_ held.
   Status MakeRoomForWrite(std::unique_lock<std::mutex>* lock);
-  void BackgroundLoop();
+  // Makes the active memtable immutable, on a fresh log, for the flush.
+  Status SwitchMemTable();
   void DeleteObsoleteFiles();
+
+  // Background work, in db_impl_background.cpp.
+  void BackgroundLoop();
+  [[nodiscard]] bool HasBackgroundWork() const;
+  [[nodiscard]] bool NeedsCompaction() const;
+  void FlushImmutable(std::unique_lock<std::mutex>* lock);
+  Status DoCompaction(const Compaction& compaction, std::unique_lock<std::mutex>* lock);
+  // The oldest sequence number any reader may still ask for.
+  [[nodiscard]] SequenceNumber SmallestSnapshot() const;
 
   const Options options_;
   Env* const env_;
@@ -93,12 +134,20 @@ class DBImpl {
   std::uint64_t log_number_ = 0;
   SequenceNumber last_sequence_ = 0;
   std::set<std::uint64_t> pending_outputs_;  // tables being built: never GC'd
+  SnapshotList snapshots_;
+  DBStats stats_;
+  // Per level, the user key after which the next automatic compaction starts.
+  std::array<std::string, kNumLevels> compact_next_start_;
+  std::optional<int> manual_compaction_level_;
+  bool manual_compaction_done_ = false;
+  Status manual_compaction_status_;
+  bool compactions_paused_ = false;
   Status background_error_;
   bool closed_ = false;
   bool shutting_down_ = false;
-  bool flush_running_ = false;
+  bool background_running_ = false;
   std::condition_variable background_work_;
-  std::condition_variable flush_done_;
+  std::condition_variable background_done_;  // a flush or compaction finished
   std::thread background_thread_;
 };
 

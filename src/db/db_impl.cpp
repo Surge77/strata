@@ -80,12 +80,6 @@ class RecoveryReporter final : public log::Reader::Reporter {
   std::uint64_t problems_ = 0;
 };
 
-bool IsEmpty(const MemTable& mem) {
-  auto it = mem.NewIterator();
-  it->SeekToFirst();
-  return !it->Valid();
-}
-
 }  // namespace
 
 DBImpl::DBImpl(const Options& options)
@@ -177,7 +171,7 @@ Status DBImpl::OpenDatabase() {
   // session's new MANIFEST and publishes it through CURRENT.
   STRATA_RETURN_IF_ERROR(NewLogFile());
   VersionEdit edit;
-  if (!IsEmpty(*mem_)) {
+  if (!mem_->empty()) {
     STRATA_RETURN_IF_ERROR(WriteLevel0Table(mem_.get(), &edit, nullptr));
     mem_ = std::make_shared<MemTable>(&internal_comparator_);
   }
@@ -290,68 +284,10 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   STRATA_RETURN_IF_ERROR(status);
   if (meta.file_size > 0) {
     Log(info_log_, LogLevel::kInfo, "flushed table {} ({} bytes)", meta.number, meta.file_size);
+    stats_.flush_bytes_written += meta.file_size;
     edit->AddFile(0, std::move(meta));
   }
   return Status::Ok();
-}
-
-Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
-  while (true) {
-    if (!background_error_.ok()) {
-      return background_error_;
-    }
-    if (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size) {
-      return Status::Ok();
-    }
-    if (imm_ != nullptr) {
-      // The previous memtable is still being flushed: wait for it. This is
-      // the (simple) write stall; phase 7 adds level-0 slowdowns.
-      flush_done_.wait(*lock);
-      continue;
-    }
-    if (Status status = NewLogFile(); !status.ok()) {
-      background_error_ = status;
-      return status;
-    }
-    imm_ = std::move(mem_);
-    imm_last_sequence_ = last_sequence_;
-    mem_ = std::make_shared<MemTable>(&internal_comparator_);
-    background_work_.notify_one();
-  }
-}
-
-void DBImpl::BackgroundLoop() {
-  std::unique_lock<std::mutex> lock(mutex_);
-  while (true) {
-    background_work_.wait(
-        lock, [this] { return shutting_down_ || (imm_ != nullptr && background_error_.ok()); });
-    if (shutting_down_) {
-      return;
-    }
-    flush_running_ = true;
-    const std::shared_ptr<MemTable> imm = imm_;
-    VersionEdit edit;
-    Status status = WriteLevel0Table(imm.get(), &edit, &lock);
-    if (status.ok()) {
-      // Logs before the active one hold only what `imm` held, which is now in
-      // a table: committing the active log number retires them.
-      edit.SetLogNumber(log_number_);
-      // Not last_sequence_: writes that arrived during the flush are only in
-      // the active log, and replay skips anything at or below this number.
-      versions_->SetLastSequence(imm_last_sequence_);
-      status = versions_->LogAndApply(&edit);
-    }
-    if (status.ok()) {
-      imm_ = nullptr;
-      DeleteObsoleteFiles();
-    } else {
-      background_error_ = status;
-      Log(info_log_, LogLevel::kError, "flush failed; refusing further writes: {}",
-          status.ToString());
-    }
-    flush_running_ = false;
-    flush_done_.notify_all();
-  }
 }
 
 void DBImpl::DeleteObsoleteFiles() {
@@ -425,15 +361,17 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
   if (!status.ok()) {
     background_error_ = status;
+    background_done_.notify_all();  // waiters re-check background_error_
     Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
         log_number_, status.ToString());
     return status;
   }
   last_sequence_ += sequenced.Count();
+  stats_.user_bytes_written += WriteBatchInternal::Contents(sequenced).size();
   return Status::Ok();
 }
 
-Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
+Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
   if (key.size() > WriteBatch::kMaxKeySize) {
     return Status::InvalidArgument("key exceeds the size limit");
   }
@@ -450,6 +388,13 @@ Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
     imm = imm_;
     version = versions_->current();
     sequence = last_sequence_;
+    if (options.snapshot != nullptr) {
+      const SnapshotImpl* snapshot = snapshots_.Find(options.snapshot);
+      if (snapshot == nullptr) {
+        return Status::InvalidArgument("snapshot was released or belongs to another database");
+      }
+      sequence = snapshot->sequence();
+    }
   }
   // Searched without the mutex: the memtables allow concurrent readers, and
   // the Version (and so its files) stays alive while `version` is held.
@@ -475,10 +420,41 @@ Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
   return Status::NotFound();
 }
 
+const Snapshot* DBImpl::GetSnapshot() {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (closed_) {
+    return nullptr;
+  }
+  return snapshots_.New(last_sequence_);
+}
+
+Status DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (!snapshots_.Release(snapshot)) {
+    return Status::InvalidArgument("snapshot was already released or belongs to another database");
+  }
+  return Status::Ok();
+}
+
+Status DBImpl::FlushMemTableForTest() {
+  std::unique_lock<std::mutex> lock(mutex_);
+  background_done_.wait(lock, [this] { return imm_ == nullptr || !background_error_.ok(); });
+  if (closed_) {
+    return Status::InvalidArgument("database is closed");
+  }
+  STRATA_RETURN_IF_ERROR(background_error_);
+  if (mem_->empty()) {
+    return Status::Ok();
+  }
+  STRATA_RETURN_IF_ERROR(SwitchMemTable());
+  background_done_.wait(lock, [this] { return imm_ == nullptr || !background_error_.ok(); });
+  return background_error_;
+}
+
 void DBImpl::WaitForFlush() {
   std::unique_lock<std::mutex> lock(mutex_);
-  flush_done_.wait(lock, [this] {
-    return (imm_ == nullptr && !flush_running_) || !background_error_.ok() || shutting_down_;
+  background_done_.wait(lock, [this] {
+    return (imm_ == nullptr && !background_running_) || !background_error_.ok() || shutting_down_;
   });
 }
 
@@ -492,6 +468,9 @@ Status DBImpl::Close() {
     shutting_down_ = true;
   }
   background_work_.notify_all();
+  // Writers stalled in MakeRoomForWrite and test hooks wait for background
+  // work that will now never finish; wake them so they see the close.
+  background_done_.notify_all();
   if (background_thread_.joinable()) {
     background_thread_.join();
   }
