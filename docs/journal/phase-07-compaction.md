@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-07-compaction`. Gate: `CompactionDoesNotResurrectDeletedKey`
 passes, and write amplification is measured and reported.
 
-> **Status: merged into `main` and tagged `phase-07` (2026-10-06).**
+> **Status: merged into `main` at `cf946c0` and tagged `phase-07` (2026-10-06).**
 
 ## Starting point
 
