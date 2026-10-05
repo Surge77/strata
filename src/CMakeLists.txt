@@ -17,6 +17,7 @@ add_library(strata STATIC
     table/block_builder.cpp
     table/bloom_filter.cpp
     table/format.cpp
+    table/merger.cpp
     table/table.cpp
     table/table_builder.cpp
     util/arena.cpp
