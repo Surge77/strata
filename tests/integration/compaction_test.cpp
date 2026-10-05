@@ -101,6 +101,38 @@ TEST_F(CompactionTest, LevelZeroCompactsIntoLevelOneAtItsTrigger) {
   EXPECT_EQ(Get("key7"), "value3");
 }
 
+// Level-0 tables with disjoint key ranges (a sequential load) need no merge:
+// each can be moved down as it is. Merging them all would rewrite every byte.
+TEST_F(CompactionTest, DisjointLevelZeroTablesAreMovedNotRewritten) {
+  Open();
+  for (int table = 0; table < 4; ++table) {
+    for (int index = 0; index < 50; ++index) {
+      Put("t" + std::to_string(table) + "-" + std::to_string(100 + index), "v");
+    }
+    Flush();
+  }
+  db_->WaitForCompactionsForTest();
+  const DBStats stats = db_->GetStats();
+  EXPECT_GE(stats.trivial_moves, 1U);
+  EXPECT_EQ(stats.compaction_bytes_written, 0U);
+  EXPECT_LT(Files(0), 4U);
+  EXPECT_EQ(Get("t3-149"), "v");
+}
+
+// A newer level-0 table must never move below an older one it overlaps: the
+// older table's stale versions would then shadow the newer ones.
+TEST_F(CompactionTest, OverlappingLevelZeroTablesAreCompactedTogether) {
+  Open();
+  for (int table = 0; table < 4; ++table) {
+    Put("a", "old" + std::to_string(table));
+    Put("t" + std::to_string(table), "x");
+    Flush();
+  }
+  db_->WaitForCompactionsForTest();
+  EXPECT_EQ(Get("a"), "old3");
+  EXPECT_EQ(Files(0), 0U);
+}
+
 // The phase gate. A tombstone that reaches a level above an older value of its
 // key must survive compaction until it meets that value; dropping it early
 // would bring the deleted value back.

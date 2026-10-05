@@ -34,6 +34,46 @@ void AddOverlapsBelow(const Version& version, const InternalKeyComparator& compa
   }
 }
 
+// The oldest level-0 table plus every level-0 table that overlaps the growing
+// set, transitively. A table left behind overlaps none of the chosen ones, so
+// it shares no key with them and moving them below it cannot put an older
+// version of a key above a newer one. Disjoint tables (a sequential load) are
+// thus taken one at a time and moved instead of rewritten.
+std::optional<Compaction> PickLevelZeroCompaction(const Version& version,
+                                                  const InternalKeyComparator& comparator) {
+  const Comparator* user = comparator.user_comparator();
+  const auto& level0 = version.files(0);  // oldest first
+  std::vector<bool> chosen(level0.size(), false);
+  chosen[0] = true;
+  std::string smallest = ToString(ExtractUserKey(level0[0].smallest));
+  std::string largest = ToString(ExtractUserKey(level0[0].largest));
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (std::size_t index = 0; index < level0.size(); ++index) {
+      if (chosen[index] || !Overlaps(user, level0[index], smallest, largest)) {
+        continue;
+      }
+      chosen[index] = true;
+      grew = true;
+      if (user->Compare(ExtractUserKey(level0[index].smallest), smallest) < 0) {
+        smallest = ToString(ExtractUserKey(level0[index].smallest));
+      }
+      if (user->Compare(ExtractUserKey(level0[index].largest), largest) > 0) {
+        largest = ToString(ExtractUserKey(level0[index].largest));
+      }
+    }
+  }
+  Compaction compaction;
+  compaction.level = 0;
+  for (std::size_t index = 0; index < level0.size(); ++index) {
+    if (chosen[index]) {
+      compaction.inputs[0].push_back(level0[index]);
+    }
+  }
+  AddOverlapsBelow(version, comparator, &compaction);
+  return compaction;
+}
+
 }  // namespace
 
 std::uint64_t MaxBytesForLevel(int level, std::uint64_t base) {
@@ -71,9 +111,7 @@ std::optional<Compaction> PickCompaction(const Version& version,
     return std::nullopt;
   }
   if (best_level == 0) {
-    // Level-0 tables overlap each other, so they are compacted together:
-    // taking only some could move an older version of a key below a newer one.
-    return PickLevelCompaction(version, comparator, 0);
+    return PickLevelZeroCompaction(version, comparator);
   }
 
   // Deeper levels: one table at a time, cycling through the key range.
