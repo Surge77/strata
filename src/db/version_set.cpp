@@ -1,6 +1,7 @@
 #include "db/version_set.hpp"
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 #include "db/filename.hpp"
@@ -153,6 +154,17 @@ Status VersionSet::Recover(bool* existing) {
 }
 
 Status VersionSet::ApplyTo(const Version& base, const VersionEdit& edit, Version* result) const {
+  for (const auto& [level, number] : edit.deleted_files()) {
+    if (level < 0 || level >= kNumLevels) {
+      return Status::Corruption("edit removes a file from an invalid level");
+    }
+    const auto& files = base.files(level);
+    if (std::none_of(files.begin(), files.end(),
+                     [number](const FileMetaData& file) { return file.number == number; })) {
+      return Status::Corruption("edit removes table " + std::to_string(number) +
+                                " which is not in level " + std::to_string(level));
+    }
+  }
   for (int level = 0; level < kNumLevels; ++level) {
     auto& files = result->files_[static_cast<std::size_t>(level)];
     for (const FileMetaData& file : base.files(level)) {
@@ -174,6 +186,18 @@ Status VersionSet::ApplyTo(const Version& base, const VersionEdit& edit, Version
     std::sort(files.begin(), files.end(), [this](const FileMetaData& a, const FileMetaData& b) {
       return comparator_->Compare(a.smallest, b.smallest) < 0;
     });
+    // Lookups binary-search these levels and stop at one file per level, and
+    // compaction never splits a user key across files. Either way, two files
+    // in one level must not share a user key.
+    const Comparator* user = comparator_->user_comparator();
+    for (std::size_t index = 1; index < files.size(); ++index) {
+      if (user->Compare(ExtractUserKey(files[index - 1].largest),
+                        ExtractUserKey(files[index].smallest)) >= 0) {
+        return Status::Corruption("tables " + std::to_string(files[index - 1].number) + " and " +
+                                  std::to_string(files[index].number) + " overlap in level " +
+                                  std::to_string(level));
+      }
+    }
   }
   return Status::Ok();
 }
