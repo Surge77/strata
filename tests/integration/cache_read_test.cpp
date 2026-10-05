@@ -13,7 +13,9 @@
 
 namespace {
 
-constexpr int kTables = 6;
+// Three tables: more than the bounded test's two cache slots, but fewer than
+// the four level-0 tables that would trigger a compaction and merge them.
+constexpr int kTables = 3;
 constexpr int kKeysPerTable = 20;
 
 class CountingFile final : public strata::RandomAccessFile {
@@ -130,10 +132,10 @@ TEST_F(CacheReadTest, BlockCacheServesRepeatedReadsWithoutFileReads) {
   WriteTables();
   strata::DB db;
   ASSERT_TRUE(strata::DB::Open(BaseOptions(), &db).ok());
-  ASSERT_EQ(*db.Get(Key(3, 5)), "value3");
+  ASSERT_EQ(*db.Get(Key(2, 5)), "value2");
   env_.Reset();
-  ASSERT_EQ(*db.Get(Key(3, 5)), "value3");
-  ASSERT_EQ(*db.Get(Key(3, 6)), "value3") << "same data block";
+  ASSERT_EQ(*db.Get(Key(2, 5)), "value2");
+  ASSERT_EQ(*db.Get(Key(2, 6)), "value2") << "same data block";
   EXPECT_EQ(env_.reads(), 0);
 }
 
@@ -143,9 +145,9 @@ TEST_F(CacheReadTest, DisabledBlockCacheReadsTheFileEveryTime) {
   options.block_cache_size = 0;
   strata::DB db;
   ASSERT_TRUE(strata::DB::Open(options, &db).ok());
-  ASSERT_EQ(*db.Get(Key(3, 5)), "value3");
+  ASSERT_EQ(*db.Get(Key(2, 5)), "value2");
   env_.Reset();
-  ASSERT_EQ(*db.Get(Key(3, 5)), "value3");
+  ASSERT_EQ(*db.Get(Key(2, 5)), "value2");
   EXPECT_EQ(env_.reads(), 1);
 }
 
