@@ -22,6 +22,15 @@ class FaultWritableFile final : public WritableFile {
 
   Status Append(Slice data) override {
     STRATA_RETURN_IF_ERROR(env_->CheckWritable());
+    const std::uint64_t allowed = env_->AppendAllowance(path_, data.size());
+    if (allowed < data.size()) {
+      if (allowed > 0) {
+        const Slice fits = data.substr(0, static_cast<std::size_t>(allowed));
+        STRATA_RETURN_IF_ERROR(base_->Append(fits));
+        env_->RecordAppend(path_, fits.size());
+      }
+      return Status::IoError(path_ + ": No space left on device (injected)");
+    }
     STRATA_RETURN_IF_ERROR(base_->Append(data));
     env_->RecordAppend(path_, data.size());
     return Status::Ok();
@@ -47,9 +56,67 @@ class FaultWritableFile final : public WritableFile {
   std::unique_ptr<WritableFile> base_;
 };
 
+// Forwards reads to a real file unless the env is injecting read errors.
+class FaultRandomAccessFile final : public RandomAccessFile {
+ public:
+  FaultRandomAccessFile(const FaultInjectionEnv* env, std::string path,
+                        std::unique_ptr<RandomAccessFile> base)
+      : env_(env), path_(std::move(path)), base_(std::move(base)) {}
+
+  Result<Slice> Read(std::uint64_t offset, std::size_t n, char* scratch) const override {
+    STRATA_RETURN_IF_ERROR(env_->InjectedReadFailure(path_));
+    return base_->Read(offset, n, scratch);
+  }
+
+ private:
+  const FaultInjectionEnv* env_;
+  std::string path_;
+  std::unique_ptr<RandomAccessFile> base_;
+};
+
 }  // namespace
 
 FaultInjectionEnv::FaultInjectionEnv(Env* base) : EnvWrapper(base) {}
+
+Result<std::unique_ptr<RandomAccessFile>> FaultInjectionEnv::NewRandomAccessFile(
+    const std::string& path) {
+  STRATA_ASSIGN_OR_RETURN(auto file, target()->NewRandomAccessFile(path));
+  return std::unique_ptr<RandomAccessFile>(
+      std::make_unique<FaultRandomAccessFile>(this, path, std::move(file)));
+}
+
+void FaultInjectionEnv::SetDiskFull(std::string path_suffix, std::uint64_t bytes_left) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  disk_full_ = DiskFull{.path_suffix = std::move(path_suffix), .bytes_left = bytes_left};
+}
+
+void FaultInjectionEnv::ClearDiskFull() {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  disk_full_.reset();
+}
+
+std::uint64_t FaultInjectionEnv::AppendAllowance(const std::string& path, std::uint64_t bytes) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (!disk_full_ || !path.ends_with(disk_full_->path_suffix)) {
+    return bytes;
+  }
+  const std::uint64_t allowed = std::min(bytes, disk_full_->bytes_left);
+  disk_full_->bytes_left -= allowed;
+  return allowed;
+}
+
+void FaultInjectionEnv::SetReadFailure(std::optional<std::string> path_suffix) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  read_failure_suffix_ = std::move(path_suffix);
+}
+
+Status FaultInjectionEnv::InjectedReadFailure(const std::string& path) const {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (read_failure_suffix_ && path.ends_with(*read_failure_suffix_)) {
+    return Status::IoError(path + ": injected read error (EIO)");
+  }
+  return Status::Ok();
+}
 
 Status FaultInjectionEnv::CheckWritable() {
   const std::lock_guard<std::mutex> guard(mutex_);
