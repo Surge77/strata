@@ -60,6 +60,14 @@ Result<std::string> DB::Get(Slice key, const ReadOptions& options) const {
   return impl_->Get(options, key);
 }
 
+const Snapshot* DB::GetSnapshot() {
+  return impl_ != nullptr ? impl_->GetSnapshot() : nullptr;
+}
+
+Status DB::ReleaseSnapshot(const Snapshot* snapshot) {
+  return impl_ != nullptr ? impl_->ReleaseSnapshot(snapshot) : NotOpen();
+}
+
 Status DB::Close() {
   if (impl_ == nullptr) {
     return Status::Ok();

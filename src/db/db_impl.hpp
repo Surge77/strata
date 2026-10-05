@@ -19,6 +19,7 @@
 
 #include "db/dbformat.hpp"
 #include "db/memtable.hpp"
+#include "db/snapshot.hpp"
 #include "db/table_cache.hpp"
 #include "db/version_set.hpp"
 #include "log/log_writer.hpp"
@@ -45,6 +46,9 @@ class DBImpl {
 
   Status Write(const WriteOptions& options, const WriteBatch& batch);
   Result<std::string> Get(const ReadOptions& options, Slice key);
+
+  const Snapshot* GetSnapshot();
+  Status ReleaseSnapshot(const Snapshot* snapshot);
 
   // Stops the background thread, syncs and closes the log. The destructor
   // releases the lock afterwards.
@@ -93,6 +97,7 @@ class DBImpl {
   std::uint64_t log_number_ = 0;
   SequenceNumber last_sequence_ = 0;
   std::set<std::uint64_t> pending_outputs_;  // tables being built: never GC'd
+  SnapshotList snapshots_;
   Status background_error_;
   bool closed_ = false;
   bool shutting_down_ = false;

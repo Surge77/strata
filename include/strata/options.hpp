@@ -7,6 +7,7 @@ namespace strata {
 
 class Env;
 class Logger;
+class Snapshot;
 
 // How to open a database. Designed for designated initialisers:
 //
@@ -65,7 +66,11 @@ struct WriteOptions {
   bool sync = false;
 };
 
-// Per-read options. Snapshots arrive in phase 7.
-struct ReadOptions {};
+// Per-read options.
+struct ReadOptions {
+  // Read the database as it was when this snapshot was taken (see
+  // DB::GetSnapshot). Null reads the latest state.
+  const Snapshot* snapshot = nullptr;
+};
 
 }  // namespace strata

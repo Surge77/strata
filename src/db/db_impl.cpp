@@ -433,7 +433,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   return Status::Ok();
 }
 
-Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
+Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
   if (key.size() > WriteBatch::kMaxKeySize) {
     return Status::InvalidArgument("key exceeds the size limit");
   }
@@ -450,6 +450,13 @@ Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
     imm = imm_;
     version = versions_->current();
     sequence = last_sequence_;
+    if (options.snapshot != nullptr) {
+      const SnapshotImpl* snapshot = snapshots_.Find(options.snapshot);
+      if (snapshot == nullptr) {
+        return Status::InvalidArgument("snapshot was released or belongs to another database");
+      }
+      sequence = snapshot->sequence();
+    }
   }
   // Searched without the mutex: the memtables allow concurrent readers, and
   // the Version (and so its files) stays alive while `version` is held.
@@ -473,6 +480,22 @@ Result<std::string> DBImpl::Get(const ReadOptions& /*options*/, Slice key) {
     return value;
   }
   return Status::NotFound();
+}
+
+const Snapshot* DBImpl::GetSnapshot() {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (closed_) {
+    return nullptr;
+  }
+  return snapshots_.New(last_sequence_);
+}
+
+Status DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  if (!snapshots_.Release(snapshot)) {
+    return Status::InvalidArgument("snapshot was already released or belongs to another database");
+  }
+  return Status::Ok();
 }
 
 void DBImpl::WaitForFlush() {

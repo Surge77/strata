@@ -3,6 +3,7 @@
 #include "strata/options.hpp"
 #include "strata/result.hpp"
 #include "strata/slice.hpp"
+#include "strata/snapshot.hpp"
 #include "strata/status.hpp"
 #include "strata/write_batch.hpp"
 
@@ -61,6 +62,15 @@ class DB {
 
   // The value of `key`, or NotFound if it is absent or deleted.
   [[nodiscard]] Result<std::string> Get(Slice key, const ReadOptions& options = {}) const;
+
+  // A snapshot of the current state, for ReadOptions::snapshot. Release it
+  // with ReleaseSnapshot before closing the database. Null if the database is
+  // closed.
+  [[nodiscard]] const Snapshot* GetSnapshot();
+
+  // Gives back a snapshot from GetSnapshot. InvalidArgument for a null,
+  // already released, or foreign snapshot.
+  Status ReleaseSnapshot(const Snapshot* snapshot);
 
   // Syncs the write-ahead log -- so after a successful Close every write is
   // durable against power loss, whatever its WriteOptions -- then releases
