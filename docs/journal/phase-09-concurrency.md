@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-09-concurrency`. Gate: TSan clean, and a 1/2/4/8
 thread scaling curve published.
 
-> **Status: merged into `main` and tagged `phase-09` (2026-10-06).**
+> **Status: merged into `main` at `0509f64` and tagged `phase-09` (2026-10-06).**
 
 ## Starting point
 

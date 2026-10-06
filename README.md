@@ -13,7 +13,7 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 8 complete; phase 9 (concurrency) is next.**
+> **Status: Phase 9 complete; phase 10 (iterators) is next.**
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
 > by a clean `Close`) survives power loss. Each claim is backed by crash tests;
@@ -42,7 +42,7 @@ Every component in this engine exists because of a specific constraint:
 | Writes can outrun compaction | level-0 write slowdown and stop triggers |
 | A restart must know which files are the database | MANIFEST log + atomic `CURRENT` publish |
 | Readers must not fault on a deleted table | refcounted immutable versions |
-| Many threads, one disk | concurrent reads and writes; group commit is planned for phase 9 |
+| Many threads, one disk | group commit: one log record and one fsync per group of writers; readers never wait on an fsync |
 
 ## Architecture
 
