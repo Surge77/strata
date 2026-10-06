@@ -62,3 +62,4 @@ catches a different class of mistake. The roles used, and what each is for:
 | 5 | [Versions, MANIFEST and flush](phase-05-version-flush.md) |
 | 6 | [Read path](phase-06-read-path.md) |
 | 7 | [Compaction](phase-07-compaction.md) |
+| 8 | [Crash tests](phase-08-crash-tests.md) |

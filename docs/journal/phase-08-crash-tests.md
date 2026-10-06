@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-08-crash-tests`. Gate: removing any single `fsync` or
 `SyncDir` call must make a crash test fail.
 
-> **Status: merged into `main` and tagged `phase-08` (2026-10-06).**
+> **Status: merged into `main` at `7448211` and tagged `phase-08` (2026-10-06).**
 
 ## Starting point
 
