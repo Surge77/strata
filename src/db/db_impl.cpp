@@ -6,9 +6,11 @@
 #include <vector>
 
 #include "db/builder.hpp"
+#include "db/db_iter.hpp"
 #include "db/filename.hpp"
 #include "db/write_batch_internal.hpp"
 #include "log/log_reader.hpp"
+#include "table/merger.hpp"
 
 namespace strata {
 namespace {
@@ -121,9 +123,9 @@ Status DBImpl::OpenDatabase() {
   // another process has the database open.
   STRATA_ASSIGN_OR_RETURN(db_lock_, env_->LockFile(LockFileName(dbname_)));
 
-  block_cache_ = std::make_unique<table::BlockCache>(options_.block_cache_size);
-  table_cache_ = std::make_unique<TableCache>(dbname_, env_, &internal_comparator_,
-                                              options_.max_open_tables, block_cache_.get());
+  table_cache_ =
+      std::make_shared<TableCache>(dbname_, env_, &internal_comparator_, options_.max_open_tables,
+                                   std::make_shared<table::BlockCache>(options_.block_cache_size));
   versions_ = std::make_unique<VersionSet>(dbname_, env_, &internal_comparator_);
   bool existing = false;
   STRATA_RETURN_IF_ERROR(versions_->Recover(&existing));
@@ -544,6 +546,51 @@ Status DBImpl::FlushMemTableForTest() {
     return Status::InvalidArgument("database closed before the flush finished");
   }
   return background_error_;
+}
+
+std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
+  std::shared_ptr<MemTable> mem;
+  std::shared_ptr<MemTable> imm;
+  std::shared_ptr<const Version> version;
+  SequenceNumber sequence = 0;
+  {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (closed_) {
+      return NewErrorIterator(Status::InvalidArgument("database is closed"));
+    }
+    mem = mem_;
+    imm = imm_;
+    version = versions_->current();
+    sequence = last_sequence_;
+    if (options.snapshot != nullptr) {
+      const SnapshotImpl* snapshot = snapshots_.Find(options.snapshot);
+      if (snapshot == nullptr) {
+        return NewErrorIterator(
+            Status::InvalidArgument("snapshot was released or belongs to another database"));
+      }
+      sequence = snapshot->sequence();
+    }
+  }
+  // The iterator holds the memtables, the Version (and so its files), and the
+  // table cache: it is a snapshot in its own right, and stays usable after
+  // the snapshot is released or even after the database is closed.
+  std::vector<std::unique_ptr<Iterator>> children;
+  children.push_back(mem->NewIterator());
+  if (imm != nullptr) {
+    children.push_back(imm->NewIterator());
+  }
+  if (Status status = version->AddIterators(table_cache_.get(), &children); !status.ok()) {
+    return NewErrorIterator(status);
+  }
+  std::vector<std::shared_ptr<const void>> keep_alive{mem, version, table_cache_};
+  if (imm != nullptr) {
+    keep_alive.push_back(imm);
+  }
+  return NewDBIterator(internal_comparator_.user_comparator(),
+                       table::NewMergingIterator(&internal_comparator_, std::move(children)),
+                       sequence,
+                       DBIterBounds{.lower = options.lower_bound, .upper = options.upper_bound},
+                       std::move(keep_alive));
 }
 
 void DBImpl::WaitForFlush() {

@@ -8,6 +8,7 @@ add_library(strata STATIC
     db/db_impl.cpp
     db/db_impl_background.cpp
     db/db_iter.cpp
+    db/level_iterator.cpp
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp

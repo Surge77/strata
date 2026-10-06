@@ -248,4 +248,29 @@ std::unique_ptr<Iterator> NewDBIterator(const Comparator* user_comparator,
                                   std::move(keep_alive));
 }
 
+namespace {
+
+class ErrorIterator final : public Iterator {
+ public:
+  explicit ErrorIterator(Status status) : status_(std::move(status)) {}
+  [[nodiscard]] bool Valid() const override { return false; }
+  void SeekToFirst() override {}
+  void SeekToLast() override {}
+  void Seek(Slice /*target*/) override {}
+  void Next() override {}
+  void Prev() override {}
+  [[nodiscard]] Slice key() const override { return {}; }
+  [[nodiscard]] Slice value() const override { return {}; }
+  [[nodiscard]] Status status() const override { return status_; }
+
+ private:
+  Status status_;
+};
+
+}  // namespace
+
+std::unique_ptr<Iterator> NewErrorIterator(Status status) {
+  return std::make_unique<ErrorIterator>(std::move(status));
+}
+
 }  // namespace strata

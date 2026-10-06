@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/env.hpp"
+#include "strata/iterator.hpp"
 #include "strata/result.hpp"
 
 #include <cstddef>
@@ -26,16 +27,21 @@ namespace strata {
 // cleanup only deletes files no live Version references.
 class TableCache {
  public:
-  // `block_cache` may be null and must outlive the cache.
+  // `block_cache` may be null. The cache shares its ownership, so iterators
+  // holding the TableCache keep it alive too.
   TableCache(std::string dbname, Env* env, const InternalKeyComparator* comparator,
-             std::size_t capacity, table::BlockCache* block_cache)
+             std::size_t capacity, std::shared_ptr<table::BlockCache> block_cache)
       : dbname_(std::move(dbname)),
         env_(env),
         comparator_(comparator),
-        block_cache_(block_cache),
+        block_cache_(std::move(block_cache)),
         tables_(capacity) {}
 
   Result<std::shared_ptr<const table::Table>> Find(std::uint64_t number, std::uint64_t file_size);
+
+  // An iterator over the table that keeps it open for as long as it lives,
+  // even if the cache evicts it meanwhile.
+  Result<std::unique_ptr<Iterator>> NewIterator(std::uint64_t number, std::uint64_t file_size);
   void Evict(std::uint64_t number);
 
  private:
@@ -45,7 +51,7 @@ class TableCache {
   const std::string dbname_;
   Env* const env_;
   const InternalKeyComparator* const comparator_;
-  table::BlockCache* const block_cache_;
+  const std::shared_ptr<table::BlockCache> block_cache_;
   LruCache<std::uint64_t, table::Table> tables_;
 };
 

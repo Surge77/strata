@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "db/db_impl.hpp"
+#include "db/db_iter.hpp"
 
 namespace strata {
 namespace {
@@ -58,6 +59,13 @@ Result<std::string> DB::Get(Slice key, const ReadOptions& options) const {
     return NotOpen();
   }
   return impl_->Get(options, key);
+}
+
+std::unique_ptr<Iterator> DB::NewIterator(const ReadOptions& options) const {
+  if (impl_ == nullptr) {
+    return NewErrorIterator(NotOpen());
+  }
+  return impl_->NewIterator(options);
 }
 
 const Snapshot* DB::GetSnapshot() {

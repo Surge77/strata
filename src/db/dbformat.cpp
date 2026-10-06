@@ -74,4 +74,10 @@ LookupKey::LookupKey(Slice user_key, SequenceNumber sequence) {
   AppendInternalKey(&storage_, {user_key, sequence, kValueTypeForSeek});
 }
 
+const InternalKeyComparator* BytewiseInternalKeyComparator() {
+  static const InternalKeyComparator* const kInstance =
+      new InternalKeyComparator(BytewiseComparator());
+  return kInstance;
+}
+
 }  // namespace strata

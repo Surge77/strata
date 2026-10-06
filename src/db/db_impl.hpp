@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/env.hpp"
+#include "strata/iterator.hpp"
 #include "strata/logger.hpp"
 #include "strata/options.hpp"
 #include "strata/result.hpp"
@@ -76,6 +77,7 @@ class DBImpl {
 
   Status Write(const WriteOptions& options, const WriteBatch& batch);
   Result<std::string> Get(const ReadOptions& options, Slice key);
+  std::unique_ptr<Iterator> NewIterator(const ReadOptions& options);
 
   const Snapshot* GetSnapshot();
   Status ReleaseSnapshot(const Snapshot* snapshot);
@@ -141,15 +143,17 @@ class DBImpl {
   const Options options_;
   Env* const env_;
   const std::string dbname_;
-  const InternalKeyComparator internal_comparator_{BytewiseComparator()};
+  // Process-wide (see BytewiseInternalKeyComparator), so iterators and tables
+  // that point at it can outlive this DB.
+  const InternalKeyComparator& internal_comparator_ = *BytewiseInternalKeyComparator();
 
   // Declared first so it is released last.
   std::unique_ptr<FileLock> db_lock_;
   std::unique_ptr<Logger> owned_info_log_;
   Logger* info_log_ = nullptr;
-  // Declared before table_cache_, whose tables point into it.
-  std::unique_ptr<table::BlockCache> block_cache_;
-  std::unique_ptr<TableCache> table_cache_;
+  // Shared with live iterators, which may outlive this DB. It owns the block
+  // cache.
+  std::shared_ptr<TableCache> table_cache_;
 
   std::mutex mutex_;
   // Everything below is guarded by mutex_.

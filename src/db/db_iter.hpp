@@ -33,4 +33,7 @@ std::unique_ptr<Iterator> NewDBIterator(const Comparator* user_comparator,
                                         DBIterBounds bounds,
                                         std::vector<std::shared_ptr<const void>> keep_alive);
 
+// An iterator with nothing in it whose status() is `status`.
+std::unique_ptr<Iterator> NewErrorIterator(Status status);
+
 }  // namespace strata
