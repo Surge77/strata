@@ -42,6 +42,18 @@ echo "==> ${#SITES[@]} sync call site(s)"
 
 cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release >/dev/null
 
+# Baseline: the unmodified tree must build and pass the crash suite. A test
+# that already fails (or flakes) would otherwise count every site as caught.
+echo "==> baseline: unmodified tree"
+if ! cmake --build "$BUILD_DIR" -j "$JOBS" >/tmp/negctl-build.log 2>&1; then
+  echo "==> ABORT: the unmodified tree does not build (see /tmp/negctl-build.log)"
+  exit 2
+fi
+if ! ctest --test-dir "$BUILD_DIR" -L crash -j "$JOBS" >/tmp/negctl-test.log 2>&1; then
+  echo "==> ABORT: the crash suite fails without any change (see /tmp/negctl-test.log)"
+  exit 2
+fi
+
 BACKUP="$(mktemp)"
 CURRENT_FILE=""
 restore() {
