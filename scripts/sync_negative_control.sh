@@ -40,7 +40,9 @@ if [[ -n "$ONLY_SITE" ]]; then
 fi
 echo "==> ${#SITES[@]} sync call site(s)"
 
-cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release >/dev/null
+# Warnings stay on but are not fatal: replacing a call can leave a variable
+# unused, and a mutant that only trips -Werror says nothing about durability.
+cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_WERROR=OFF >/dev/null
 
 # Baseline: the unmodified tree must build and pass the crash suite. A test
 # that already fails (or flakes) would otherwise count every site as caught.
