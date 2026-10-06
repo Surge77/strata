@@ -16,8 +16,8 @@ constexpr auto kSlowdownDelay = std::chrono::milliseconds(1);
 
 }  // namespace
 
-Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
-  bool allow_delay = true;
+Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock, bool force) {
+  bool allow_delay = !force;
   while (true) {
     // Checked on every pass: Close can happen while this write waits below.
     if (closed_) {
@@ -38,7 +38,7 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
     // An empty memtable always takes the write: its fixed overhead can exceed
     // a tiny write_buffer_size, and retiring it would flush nothing and then
     // retire the next empty one, forever.
-    if (mem_->empty() || mem_->ApproximateMemoryUsage() <= options_.write_buffer_size) {
+    if (mem_->empty() || (!force && mem_->ApproximateMemoryUsage() <= options_.write_buffer_size)) {
       return Status::Ok();
     }
     if (imm_ != nullptr) {
@@ -51,6 +51,7 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock) {
       continue;
     }
     STRATA_RETURN_IF_ERROR(SwitchMemTable());
+    force = false;  // the fresh memtable is empty, so the next pass returns
   }
 }
 

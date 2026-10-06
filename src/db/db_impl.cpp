@@ -345,36 +345,111 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   if (batch.Count() == 0) {
     return Status::Ok();
   }
+  return WriteImpl(options, &batch);
+}
 
+Status DBImpl::WriteImpl(const WriteOptions& options, const WriteBatch* batch) {
+  Writer self;
+  self.batch = batch;
+  self.sync = options.sync;
   std::unique_lock<std::mutex> lock(mutex_);
   if (closed_) {
     return Status::InvalidArgument("database is closed");
   }
-  STRATA_RETURN_IF_ERROR(MakeRoomForWrite(&lock));
+  writers_.push_back(&self);
+  self.cv.wait(lock, [&] { return self.done || writers_.front() == &self; });
+  if (self.done) {
+    return self.status;  // a leader committed this write in its group
+  }
 
-  // Stamp a copy with its sequence number; the caller's batch stays untouched.
-  WriteBatch sequenced = batch;
-  WriteBatchInternal::SetSequence(&sequenced, last_sequence_ + 1);
+  // This writer leads: it commits itself and the writers queued behind it.
+  Status status = MakeRoomForWrite(&lock, /*force=*/batch == nullptr);
+  Writer* last_writer = &self;
+  if (status.ok() && batch != nullptr) {
+    BuildBatchGroup(&last_writer);
+    const SequenceNumber first = last_sequence_ + 1;
+    WriteBatchInternal::SetSequence(&group_batch_, first);
+    log::Writer* const log = log_.get();
+    WritableFile* const log_file = log_file_.get();
+    MemTable* const mem = mem_.get();
+    lock.unlock();
+    // The durability boundary: once the record is in the log (and synced, if
+    // the group asked), its writes are acknowledged. They become visible only
+    // when last_sequence_ moves past them, below.
+    status = log->AddRecord(WriteBatchInternal::Contents(group_batch_));
+    if (status.ok() && self.sync) {
+      status = log_file->Sync();
+    }
+    if (status.ok()) {
+      status = InsertInto(group_batch_, mem);
+    }
+    lock.lock();
+    if (status.ok()) {
+      last_sequence_ = first + WriteBatchInternal::Count(group_batch_) - 1;
+      ++stats_.write_groups;
+      stats_.log_syncs += self.sync ? 1U : 0U;
+      stats_.user_bytes_written += WriteBatchInternal::Contents(group_batch_).size();
+    } else {
+      background_error_ = status;
+      background_done_.notify_all();  // waiters re-check background_error_
+      Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
+          log_number_, status.ToString());
+    }
+    group_batch_.Clear();
+  }
 
-  // The durability boundary: once the record is in the log (and synced, if
-  // asked), the write is acknowledged. Only then is it made visible.
-  Status status = log_->AddRecord(WriteBatchInternal::Contents(sequenced));
-  if (status.ok() && options.sync) {
-    status = log_file_->Sync();
+  // Hand the outcome to every writer in the group, then wake the next leader.
+  while (true) {
+    Writer* const ready = writers_.front();
+    writers_.pop_front();
+    if (ready != &self) {
+      ready->status = status;
+      ready->done = true;
+      ready->cv.notify_one();
+    }
+    if (ready == last_writer) {
+      break;
+    }
   }
-  if (status.ok()) {
-    status = InsertInto(sequenced, mem_.get());
+  if (!writers_.empty()) {
+    writers_.front()->cv.notify_one();
+  } else {
+    writers_idle_.notify_all();
   }
-  if (!status.ok()) {
-    background_error_ = status;
-    background_done_.notify_all();  // waiters re-check background_error_
-    Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
-        log_number_, status.ToString());
-    return status;
+  return status;
+}
+
+void DBImpl::BuildBatchGroup(Writer** last_writer) {
+  // A group of small writes may grow by this much; a large write is not held
+  // back by more than this. The cap also keeps the merged count far below
+  // the batch format's 2^32 limit.
+  constexpr std::size_t kSmallWriteBytes = 128 * 1024;
+  constexpr std::size_t kMaxGroupBytes = 1024 * 1024;
+
+  const Writer* const first = writers_.front();
+  group_batch_ = *first->batch;  // a copy: the caller's batch stays untouched
+  std::size_t size = group_batch_.ApproximateSize();
+  const std::size_t max_size = size <= kSmallWriteBytes ? size + kSmallWriteBytes : kMaxGroupBytes;
+  for (auto it = writers_.begin() + 1; it != writers_.end(); ++it) {
+    Writer* const writer = *it;
+    if (writer->sync && !first->sync) {
+      break;  // an unsynced group must not acknowledge a synced write
+    }
+    if (writer->batch == nullptr) {
+      break;  // a forced memtable switch is a group of its own
+    }
+    size += writer->batch->ApproximateSize();
+    if (size > max_size) {
+      break;
+    }
+    group_batch_.Append(*writer->batch);
+    *last_writer = writer;
   }
-  last_sequence_ += sequenced.Count();
-  stats_.user_bytes_written += WriteBatchInternal::Contents(sequenced).size();
-  return Status::Ok();
+}
+
+std::size_t DBImpl::QueuedWritersForTest() {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  return writers_.empty() ? 0 : writers_.size() - 1;
 }
 
 Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
@@ -443,16 +518,9 @@ Status DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
 }
 
 Status DBImpl::FlushMemTableForTest() {
+  // Through the writer queue, so the switch never races a leader's log write.
+  STRATA_RETURN_IF_ERROR(WriteImpl(WriteOptions{}, nullptr));
   std::unique_lock<std::mutex> lock(mutex_);
-  background_done_.wait(lock, [this] { return imm_ == nullptr || !background_error_.ok(); });
-  if (closed_) {
-    return Status::InvalidArgument("database is closed");
-  }
-  STRATA_RETURN_IF_ERROR(background_error_);
-  if (mem_->empty()) {
-    return Status::Ok();
-  }
-  STRATA_RETURN_IF_ERROR(SwitchMemTable());
   background_done_.wait(lock, [this] { return imm_ == nullptr || !background_error_.ok(); });
   return background_error_;
 }
@@ -477,6 +545,13 @@ Status DBImpl::Close() {
   // Writers stalled in MakeRoomForWrite and test hooks wait for background
   // work that will now never finish; wake them so they see the close.
   background_done_.notify_all();
+  {
+    // A leader may be writing the log with the mutex released. Each queued
+    // writer becomes leader in turn, sees closed_, and leaves; the log is
+    // closed only once the queue is empty.
+    std::unique_lock<std::mutex> lock(mutex_);
+    writers_idle_.wait(lock, [this] { return writers_.empty(); });
+  }
   if (background_thread_.joinable()) {
     background_thread_.join();
   }
