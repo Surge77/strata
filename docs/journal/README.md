@@ -64,3 +64,4 @@ catches a different class of mistake. The roles used, and what each is for:
 | 7 | [Compaction](phase-07-compaction.md) |
 | 8 | [Crash tests](phase-08-crash-tests.md) |
 | 9 | [Concurrency](phase-09-concurrency.md) |
+| 10 | [Iterators](phase-10-iterators.md) |

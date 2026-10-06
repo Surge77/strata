@@ -3,7 +3,7 @@
 **Branch:** `feature/phase-10-iterators`. Gate: scans match the reference model
 under concurrent writes.
 
-> **Status: merged into `main` and tagged `phase-10` (2026-10-06).**
+> **Status: merged into `main` at `11eba51` and tagged `phase-10` (2026-10-06).**
 
 ## Starting point
 
