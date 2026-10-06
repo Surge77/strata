@@ -60,6 +60,17 @@ remain authoritative. `LogAndApply` syncs the edit before making the new
 published through an atomically renamed `CURRENT` and a directory sync.
 See [format/manifest.md](format/manifest.md) for the byte format and ordering.
 
+## Range scans
+
+`DB::NewIterator` merges the memtable, the immutable memtable, every level-0
+table, and one concatenating iterator per deeper level. `DBIter` turns that
+internal stream into one entry per user key, holding the newest value visible
+at the scan's sequence number, with deleted keys hidden. It does this in both
+directions, within optional lower and upper bounds. The iterator holds the
+memtables, the `Version`, and the table cache, so it is a consistent snapshot
+in its own right. A malformed key or a table that cannot be read ends a scan
+with an error, never with silently missing entries.
+
 ## Compaction
 
 Flush and compaction share one background thread, flush first, so they never
