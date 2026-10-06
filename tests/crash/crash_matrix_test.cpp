@@ -90,13 +90,19 @@ std::vector<State> PrefixStates(const State& start, const std::vector<Op>& ops) 
   return states;
 }
 
-Options CrashOptions(const std::string& path, Env* env) {
+// Big enough that only the workload's explicit flushes rotate the memtable.
+constexpr std::size_t kExplicitFlushBuffer = 1024 * 1024;
+// Small enough that writes rotate the memtable themselves, so background
+// flushes and compactions overlap the writes that follow.
+constexpr std::size_t kOverlappingBuffer = 8 * 1024;
+
+Options CrashOptions(const std::string& path, Env* env,
+                     std::size_t write_buffer = kExplicitFlushBuffer) {
   Options options;
   options.path = path;
   options.env = env;
-  // Big enough that only the workload's explicit flushes rotate the memtable;
-  // small tables and level budgets so compactions span several levels.
-  options.write_buffer_size = 1024 * 1024;
+  // Small tables and level budgets so compactions span several levels.
+  options.write_buffer_size = write_buffer;
   options.max_file_size = 1024;
   options.max_bytes_for_level_base = 4 * 1024;
   return options;
@@ -106,6 +112,12 @@ struct RunResult {
   std::size_t acknowledged = 0;  // operations that returned Ok, in order
   std::size_t durable = 0;       // writes promised to survive power loss
   bool stopped_by_error = false;
+  // The failing operation was a write, which may have reached the log.
+  bool failed_on_write = false;
+
+  // The longest prefix recovery may legitimately show: one more than was
+  // acknowledged only if the failure was a write that may have landed.
+  [[nodiscard]] std::size_t high() const { return acknowledged + (failed_on_write ? 1 : 0); }
 };
 
 // Applies `ops` until one fails. Synced writes and successful flushes raise
@@ -139,14 +151,15 @@ RunResult Apply(DBImpl* db, const std::vector<Op>& ops) {
         status = Status::Ok();  // a failure here makes the next operation fail
         break;
     }
+    const bool is_write = op.kind == Op::Kind::kPut || op.kind == Op::Kind::kDelete;
     if (!status.ok()) {
       result.stopped_by_error = true;
+      result.failed_on_write = is_write;
       return result;
     }
     ++result.acknowledged;
     // A synced write, or a flush, makes every earlier write durable.
     // Compactions only rewrite what flushes already made durable.
-    const bool is_write = op.kind == Op::Kind::kPut || op.kind == Op::Kind::kDelete;
     if ((is_write && op.sync) || op.kind == Op::Kind::kFlush) {
       result.durable = result.acknowledged;
     }
@@ -196,17 +209,16 @@ std::string Describe(const State& state) {
     return ::testing::AssertionFailure() << "power loss simulation failed";
   }
   env->SetFilesystemActive(true);
-  auto opened = DBImpl::Open(CrashOptions(path, env));
+  auto opened = DBImpl::OpenForTest(CrashOptions(path, env), /*compactions_paused=*/true);
   if (!opened.ok()) {
     return ::testing::AssertionFailure() << "reopen failed: " << opened.status().ToString();
   }
   auto db = std::move(*opened);
-  db->PauseCompactionsForTest(true);
   const auto recovered = ReadState(db.get());
   if (!recovered.ok()) {
     return ::testing::AssertionFailure() << "read failed: " << recovered.status().ToString();
   }
-  const std::size_t high = run.acknowledged + (run.stopped_by_error ? 1 : 0);
+  const std::size_t high = run.high();
   const auto match = MatchingPrefix(*recovered, states, run.durable, high);
   if (!match) {
     return ::testing::AssertionFailure() << "recovered state matches no prefix in [" << run.durable
@@ -228,14 +240,10 @@ std::string Describe(const State& state) {
   return ::testing::AssertionSuccess();
 }
 
+// Compactions run only when the workload says, from the moment Open starts.
 std::unique_ptr<DBImpl> OpenForWorkload(const std::string& path, Env* env) {
-  auto opened = DBImpl::Open(CrashOptions(path, env));
-  if (!opened.ok()) {
-    return nullptr;
-  }
-  auto db = std::move(*opened);
-  db->PauseCompactionsForTest(true);  // compactions run only when the workload says
-  return db;
+  auto opened = DBImpl::OpenForTest(CrashOptions(path, env), /*compactions_paused=*/true);
+  return opened.ok() ? std::move(*opened) : nullptr;
 }
 
 constexpr std::uint32_t kMatrixSeed = 2026;
@@ -333,6 +341,117 @@ TEST(CrashMatrixTest, RandomCrashesAndRestartsMatchTheModel) {
       model = states[prefix];
       cursor += length;
     }
+  }
+}
+
+// Leaves a database that needs real recovery work -- tables at several levels
+// plus writes still only in the log -- then crashes and loses power. The same
+// state is rebuilt for every crash point below, so it must be deterministic.
+RunResult PrepareCrashedDatabase(const std::string& path, FaultInjectionEnv* env,
+                                 const std::vector<Op>& ops) {
+  RunResult run;
+  if (auto db = OpenForWorkload(path, env)) {
+    run = Apply(db.get(), ops);
+    env->SetFilesystemActive(false);  // dies without closing
+    static_cast<void>(db->Close());
+  }
+  static_cast<void>(env->SimulatePowerLoss());
+  env->SetFilesystemActive(true);
+  return run;
+}
+
+constexpr std::uint32_t kRecoverySeed = 77;
+constexpr int kRecoveryOps = 70;
+
+// Crashes Open itself -- log replay, the recovery flush, the new MANIFEST and
+// CURRENT, and deletion of old logs -- at every one of its filesystem
+// operations. A crash during recovery must lose nothing the first crash kept.
+TEST(CrashMatrixTest, EveryCrashPointDuringRecoveryKeepsTheRecoverableState) {
+  const std::vector<Op> ops = MakeOps(kRecoverySeed, kRecoveryOps);
+  const std::vector<State> states = PrefixStates({}, ops);
+
+  std::uint64_t recovery_ops = 0;
+  RunResult prepared;
+  {
+    TestDir dir("recovery_matrix_baseline");
+    FaultInjectionEnv env(Env::Default());
+    prepared = PrepareCrashedDatabase(dir.File("db"), &env, ops);
+    ASSERT_EQ(prepared.acknowledged, ops.size());
+    const std::uint64_t before = env.mutating_ops();
+    auto db = OpenForWorkload(dir.File("db"), &env);
+    ASSERT_NE(db, nullptr);
+    recovery_ops = env.mutating_ops() - before;
+    ASSERT_TRUE(db->Close().ok());
+  }
+  ASSERT_GT(recovery_ops, 5U) << "recovery must have real work to do";
+  std::printf("recovery matrix: %llu crash points\n",
+              static_cast<unsigned long long>(recovery_ops));
+
+  for (std::uint64_t crash_at = 0; crash_at <= recovery_ops; ++crash_at) {
+    TestDir dir("recovery_matrix");
+    FaultInjectionEnv env(Env::Default());
+    const RunResult run = PrepareCrashedDatabase(dir.File("db"), &env, ops);
+    ASSERT_EQ(run.acknowledged, prepared.acknowledged) << "preparation is not deterministic";
+    env.SetCrashAfterOps(crash_at);
+    if (auto db = OpenForWorkload(dir.File("db"), &env)) {
+      static_cast<void>(db->Close());
+    }
+    env.SetCrashAfterOps(std::nullopt);
+    std::size_t prefix = 0;
+    std::unique_ptr<DBImpl> reopened;
+    ASSERT_TRUE(RecoverAndCheck(&env, dir.File("db"), states, run, &prefix, &reopened))
+        << "crash after " << crash_at << " of " << recovery_ops << " recovery operations";
+    ASSERT_TRUE(reopened->Close().ok());
+  }
+}
+
+// Background flushes and compactions overlapping foreground writes: the
+// memtable rotates on its own and compaction runs whenever it is due. That is
+// not deterministic, so crash points are sampled rather than swept.
+TEST(CrashMatrixTest, RandomCrashPointsWithBackgroundWorkOverlappingWrites) {
+  constexpr int kRuns = 60;
+  std::vector<Op> ops;
+  for (Op& op : MakeOps(4242, 400)) {
+    if (op.kind == Op::Kind::kPut || op.kind == Op::Kind::kDelete) {
+      ops.push_back(std::move(op));
+    }
+  }
+  const std::vector<State> states = PrefixStates({}, ops);
+  std::uint64_t typical_ops = 0;
+  {
+    TestDir dir("overlap_baseline");
+    FaultInjectionEnv env(Env::Default());
+    auto opened = DBImpl::Open(CrashOptions(dir.File("db"), &env, kOverlappingBuffer));
+    ASSERT_TRUE(opened.ok());
+    const RunResult run = Apply(opened->get(), ops);
+    ASSERT_EQ(run.acknowledged, ops.size());
+    typical_ops = env.mutating_ops();
+    ASSERT_TRUE((*opened)->Close().ok());
+  }
+
+  std::mt19937 random(99);
+  for (int iteration = 0; iteration < kRuns; ++iteration) {
+    const std::uint64_t crash_at = random() % (typical_ops + 1);
+    TestDir dir("overlap_crash");
+    FaultInjectionEnv env(Env::Default());
+    env.SetCrashAfterOps(crash_at);
+    RunResult run;
+    {
+      // Scoped: the database releases its LOCK only when destroyed.
+      auto opened = DBImpl::Open(CrashOptions(dir.File("db"), &env, kOverlappingBuffer));
+      if (opened.ok()) {
+        run = Apply(opened->get(), ops);
+        static_cast<void>((*opened)->Close());
+      } else {
+        run.stopped_by_error = true;
+      }
+    }
+    env.SetCrashAfterOps(std::nullopt);
+    std::size_t prefix = 0;
+    std::unique_ptr<DBImpl> reopened;
+    ASSERT_TRUE(RecoverAndCheck(&env, dir.File("db"), states, run, &prefix, &reopened))
+        << "crash after " << crash_at << " filesystem operations";
+    ASSERT_TRUE(reopened->Close().ok());
   }
 }
 

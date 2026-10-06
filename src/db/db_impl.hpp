@@ -54,6 +54,10 @@ struct DBStats {
 class DBImpl {
  public:
   static Result<std::unique_ptr<DBImpl>> Open(const Options& options);
+  // Test hook: opens with automatic compactions already paused, so none can
+  // start between Open returning and PauseCompactionsForTest.
+  static Result<std::unique_ptr<DBImpl>> OpenForTest(const Options& options,
+                                                     bool compactions_paused);
 
   DBImpl(const DBImpl&) = delete;
   DBImpl& operator=(const DBImpl&) = delete;
