@@ -78,7 +78,7 @@ bool DBImpl::NeedsCompaction() const {
 }
 
 bool DBImpl::HasBackgroundWork() const {
-  return imm_ != nullptr || manual_compaction_level_.has_value() ||
+  return (imm_ != nullptr && !flushes_paused_) || manual_compaction_level_.has_value() ||
          (!compactions_paused_ && NeedsCompaction());
 }
 
@@ -95,7 +95,7 @@ void DBImpl::BackgroundLoop() {
       return;
     }
     background_running_ = true;
-    if (imm_ != nullptr) {
+    if (imm_ != nullptr && !flushes_paused_) {
       // Flush first: writes may be waiting for the memtable to drain.
       FlushImmutable(&lock);
     } else if (manual_compaction_level_.has_value()) {
@@ -246,6 +246,17 @@ void DBImpl::PauseCompactionsForTest(bool paused) {
   const std::lock_guard<std::mutex> guard(mutex_);
   compactions_paused_ = paused;
   background_work_.notify_all();
+}
+
+void DBImpl::PauseFlushesForTest(bool paused) {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  flushes_paused_ = paused;
+  background_work_.notify_all();
+}
+
+bool DBImpl::HasImmutableMemTableForTest() {
+  const std::lock_guard<std::mutex> guard(mutex_);
+  return imm_ != nullptr;
 }
 
 std::vector<FileMetaData> DBImpl::FilesAtLevelForTest(int level) {

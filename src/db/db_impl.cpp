@@ -93,11 +93,17 @@ DBImpl::~DBImpl() {
 }
 
 Result<std::unique_ptr<DBImpl>> DBImpl::Open(const Options& options) {
+  return OpenForTest(options, /*compactions_paused=*/false);
+}
+
+Result<std::unique_ptr<DBImpl>> DBImpl::OpenForTest(const Options& options,
+                                                    bool compactions_paused) {
   if (options.path.empty()) {
     return Status::InvalidArgument("Options::path is empty");
   }
   // The constructor is private, so make_unique cannot reach it.
   std::unique_ptr<DBImpl> impl(new DBImpl(options));
+  impl->compactions_paused_ = compactions_paused;  // before the thread starts
   STRATA_RETURN_IF_ERROR(impl->OpenDatabase());
   return impl;
 }

@@ -185,4 +185,74 @@ TEST_F(FaultInjectionEnvTest, TruncatingAnExistingFileLosesOldContentsUntilSynce
   EXPECT_EQ(ReadAll(&env_, path), "");
 }
 
+TEST_F(FaultInjectionEnvTest, DiskFullWritesWhatFitsThenFails) {
+  const std::string path = dir_.File("full.sst");
+  env_.SetDiskFull(".sst", 4);
+  auto file = env_.NewWritableFile(path);
+  ASSERT_TRUE(file.ok());
+  const strata::Status status = (*file)->Append("abcdefgh");
+  EXPECT_TRUE(status.IsIoError());
+  EXPECT_NE(status.ToString().find("No space left"), std::string::npos) << status.ToString();
+  EXPECT_TRUE((*file)->Append("x").IsIoError()) << "the disk stays full";
+  ASSERT_TRUE((*file)->Close().ok());
+  EXPECT_EQ(ReadAll(&env_, path), "abcd") << "a real ENOSPC can leave a partial write";
+}
+
+TEST_F(FaultInjectionEnvTest, DiskFullOnlyAffectsMatchingFiles) {
+  env_.SetDiskFull(".sst", 0);
+  auto log = env_.NewWritableFile(dir_.File("000001.log"));
+  ASSERT_TRUE(log.ok());
+  EXPECT_TRUE((*log)->Append("still fine").ok());
+  env_.ClearDiskFull();
+  auto table = env_.NewWritableFile(dir_.File("000002.sst"));
+  ASSERT_TRUE(table.ok());
+  EXPECT_TRUE((*table)->Append("space again").ok());
+}
+
+TEST_F(FaultInjectionEnvTest, ReadFailureHitsOnlyMatchingFiles) {
+  WriteDurably(&env_, dir_.File("a.sst"), "table bytes");
+  WriteDurably(&env_, dir_.File("b.log"), "log bytes");
+  env_.SetReadFailure(".sst");
+  auto table = env_.NewRandomAccessFile(dir_.File("a.sst"));
+  ASSERT_TRUE(table.ok());
+  char scratch[16];
+  const auto failed = (*table)->Read(0, 5, scratch);
+  EXPECT_TRUE(failed.status().IsIoError());
+  auto log = env_.NewRandomAccessFile(dir_.File("b.log"));
+  ASSERT_TRUE(log.ok());
+  const auto read = (*log)->Read(0, 3, scratch);
+  ASSERT_TRUE(read.ok());
+  EXPECT_EQ(strata::ToString(*read), "log");
+
+  env_.SetReadFailure(std::nullopt);
+  const auto recovered = (*table)->Read(0, 5, scratch);
+  ASSERT_TRUE(recovered.ok());
+  EXPECT_EQ(strata::ToString(*recovered), "table");
+}
+
+TEST_F(FaultInjectionEnvTest, ReadFailureCanWaitForSomeReadsToSucceed) {
+  WriteDurably(&env_, dir_.File("a.sst"), "table bytes");
+  auto table = env_.NewRandomAccessFile(dir_.File("a.sst"));
+  ASSERT_TRUE(table.ok());
+  env_.SetReadFailure(".sst", 2);
+  char scratch[16];
+  EXPECT_TRUE((*table)->Read(0, 1, scratch).ok());
+  EXPECT_TRUE((*table)->Read(1, 1, scratch).ok());
+  EXPECT_TRUE((*table)->Read(2, 1, scratch).status().IsIoError());
+  EXPECT_TRUE((*table)->Read(3, 1, scratch).status().IsIoError()) << "and every read after";
+}
+
+TEST_F(FaultInjectionEnvTest, ReadFailureCoversSequentialReads) {
+  WriteDurably(&env_, dir_.File("MANIFEST-000001"), "manifest bytes");
+  env_.SetReadFailure("MANIFEST-");
+  auto manifest = env_.NewSequentialFile(dir_.File("MANIFEST-000001"));
+  ASSERT_TRUE(manifest.ok());
+  char scratch[16];
+  EXPECT_TRUE((*manifest)->Read(8, scratch).status().IsIoError());
+  env_.SetReadFailure(std::nullopt);
+  const auto recovered = (*manifest)->Read(8, scratch);
+  ASSERT_TRUE(recovered.ok()) << "failure is checked per read, not per open";
+  EXPECT_EQ(strata::ToString(*recovered), "manifest") << "the failed read consumed nothing";
+}
+
 }  // namespace

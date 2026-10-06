@@ -54,6 +54,10 @@ struct DBStats {
 class DBImpl {
  public:
   static Result<std::unique_ptr<DBImpl>> Open(const Options& options);
+  // Test hook: opens with automatic compactions already paused, so none can
+  // start between Open returning and PauseCompactionsForTest.
+  static Result<std::unique_ptr<DBImpl>> OpenForTest(const Options& options,
+                                                     bool compactions_paused);
 
   DBImpl(const DBImpl&) = delete;
   DBImpl& operator=(const DBImpl&) = delete;
@@ -79,6 +83,8 @@ class DBImpl {
   Status CompactLevelForTest(int level);      // all of `level` into level + 1
   void WaitForCompactionsForTest();           // until no automatic compaction is due
   void PauseCompactionsForTest(bool paused);  // automatic ones only
+  void PauseFlushesForTest(bool paused);      // the immutable memtable waits
+  bool HasImmutableMemTableForTest();
   std::vector<FileMetaData> FilesAtLevelForTest(int level);
   std::uint64_t LevelBytesForTest(int level);
   void EvictTableForTest(std::uint64_t number);
@@ -142,6 +148,7 @@ class DBImpl {
   bool manual_compaction_done_ = false;
   Status manual_compaction_status_;
   bool compactions_paused_ = false;
+  bool flushes_paused_ = false;
   Status background_error_;
   bool closed_ = false;
   bool shutting_down_ = false;
