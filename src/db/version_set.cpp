@@ -140,7 +140,11 @@ Status VersionSet::Recover(bool* existing) {
     }
   }
   if (!reporter.status.ok()) {
-    return Status::Corruption(manifest_name + ": " + std::string(reporter.status.message()));
+    // Keep the reader's code: a failed read (EIO) is not damage, and calling
+    // it Corruption would send the user to repair a database that only needs
+    // a retry.
+    const std::string message = manifest_name + ": " + std::string(reporter.status.message());
+    return reporter.status.IsIoError() ? Status::IoError(message) : Status::Corruption(message);
   }
   if (!have_log || !have_next || !have_sequence) {
     return Status::Corruption(manifest_name + ": missing required fields");

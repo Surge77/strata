@@ -106,7 +106,7 @@ TEST_F(ErrorInjectionTest, DiskFullInTheLogFailsTheWriteAndKeepsAcknowledgedOnes
 TEST_F(ErrorInjectionTest, DiskFullDuringFlushStopsWritesAndLosesNothing) {
   Open();
   PutKeys(0, kKeys);
-  env_.SetDiskFull(".sst", 0);
+  env_.SetDiskFull(".sst", 500);  // part of the table is written first
   EXPECT_TRUE(db_->FlushMemTableForTest().IsIoError());
   EXPECT_TRUE(Put("after", "x").IsIoError());
   ExpectKeys(0, kKeys);  // still served from the memtable that failed to flush
@@ -120,7 +120,7 @@ TEST_F(ErrorInjectionTest, DiskFullDuringFlushStopsWritesAndLosesNothing) {
 TEST_F(ErrorInjectionTest, DiskFullDuringCompactionKeepsItsInputs) {
   Open();
   MakeTwoOverlappingTables();
-  env_.SetDiskFull(".sst", 0);
+  env_.SetDiskFull(".sst", 500);
   EXPECT_TRUE(db_->CompactLevelForTest(0).IsIoError());
   EXPECT_EQ(db_->FilesAtLevelForTest(0).size(), 2U);
   EXPECT_EQ(TableFiles(), 2U) << "outputs are deleted, inputs kept";
@@ -161,6 +161,90 @@ TEST_F(ErrorInjectionTest, ReadErrorDuringCompactionKeepsItsInputs) {
   ExpectKeys(0, kKeys);
 
   Reopen();
+  ExpectKeys(0, kKeys);
+}
+
+// The tables stay open, so the failure lands in the middle of the merge rather
+// than when a table is opened: the merge must stop, not skip the table.
+TEST_F(ErrorInjectionTest, ReadErrorInTheMiddleOfAMergeKeepsItsInputs) {
+  Open();
+  MakeTwoOverlappingTables();
+  env_.SetReadFailure(".sst", 2);
+  EXPECT_TRUE(db_->CompactLevelForTest(0).IsIoError());
+  env_.SetReadFailure(std::nullopt);
+  EXPECT_EQ(db_->FilesAtLevelForTest(0).size(), 2U);
+  EXPECT_EQ(TableFiles(), 2U);
+  ExpectKeys(0, kKeys);
+
+  Reopen();
+  ExpectKeys(0, kKeys);
+}
+
+TEST_F(ErrorInjectionTest, DiskFullInTheManifestFailsTheFlushAndLosesNothing) {
+  Open();
+  PutKeys(0, kKeys);
+  env_.SetDiskFull("MANIFEST-", 0);
+  EXPECT_TRUE(db_->FlushMemTableForTest().IsIoError());
+  EXPECT_TRUE(Put("after", "x").IsIoError());
+
+  env_.ClearDiskFull();
+  Reopen();
+  ExpectKeys(0, kKeys);
+}
+
+TEST_F(ErrorInjectionTest, SyncFailureAtTheManifestCommitFailsTheFlushAndLosesNothing) {
+  Open();
+  PutKeys(0, kKeys);
+  env_.SetSyncFailure(true, "MANIFEST-");
+  EXPECT_TRUE(db_->FlushMemTableForTest().IsIoError());
+  env_.SetSyncFailure(false);
+
+  Reopen();
+  ExpectKeys(0, kKeys);
+}
+
+// Open publishes a new MANIFEST through a temporary CURRENT file.
+TEST_F(ErrorInjectionTest, DiskFullWhilePublishingCurrentFailsOpenAndLosesNothing) {
+  Open();
+  PutKeys(0, kKeys, /*sync=*/true);
+  ASSERT_TRUE(db_->Close().ok());
+  db_ = nullptr;
+
+  env_.SetDiskFull(".dbtmp", 0);
+  EXPECT_FALSE(DBImpl::Open(DbOptions()).ok());
+  env_.ClearDiskFull();
+  Open();
+  ExpectKeys(0, kKeys);
+}
+
+// A read error while replaying the log must fail Open. Treating it as the end
+// of the log would open a database silently missing acknowledged writes.
+TEST_F(ErrorInjectionTest, ReadErrorDuringLogReplayFailsOpenInsteadOfDroppingWrites) {
+  Open();
+  PutKeys(0, kKeys);  // left in the log: never flushed
+  ASSERT_TRUE(db_->Close().ok());
+  db_ = nullptr;
+
+  env_.SetReadFailure(".log");
+  const auto failed = DBImpl::Open(DbOptions());
+  EXPECT_TRUE(failed.status().IsIoError()) << failed.status().ToString();
+  env_.SetReadFailure(std::nullopt);
+  Open();
+  ExpectKeys(0, kKeys);
+}
+
+TEST_F(ErrorInjectionTest, ReadErrorInTheManifestFailsOpen) {
+  Open();
+  PutKeys(0, kKeys);
+  ASSERT_TRUE(db_->FlushMemTableForTest().ok());
+  ASSERT_TRUE(db_->Close().ok());
+  db_ = nullptr;
+
+  env_.SetReadFailure("MANIFEST-");
+  const auto failed = DBImpl::Open(DbOptions());
+  EXPECT_TRUE(failed.status().IsIoError()) << failed.status().ToString();
+  env_.SetReadFailure(std::nullopt);
+  Open();
   ExpectKeys(0, kKeys);
 }
 
