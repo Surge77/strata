@@ -11,6 +11,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -40,6 +41,8 @@ struct DBStats {
   std::uint64_t compaction_bytes_written = 0;
   std::uint64_t write_slowdowns = 0;  // writes delayed because level 0 was long
   std::uint64_t write_stops = 0;      // waits because level 0 was full
+  std::uint64_t write_groups = 0;     // log records written: one per commit group
+  std::uint64_t log_syncs = 0;        // fsyncs of the log for synced groups
 };
 
 // The engine behind strata::DB.
@@ -49,8 +52,14 @@ struct DBStats {
 // background thread flushes it to a level-0 SSTable, committing the new
 // table through the MANIFEST. The same thread compacts levels whenever one is
 // over budget, flush first. Reads check the memtable, the immutable one, then
-// the current Version's tables. Concurrency is one mutex (ADR-0004); flush and
-// compaction do their I/O without holding it.
+// the current Version's tables.
+//
+// Concurrency is one mutex (ADR-0004), held only to change shared state, never
+// across I/O. Writers queue; the one at the front leads a commit group: it
+// merges the batches queued behind it into one log record, appends and (if
+// asked) fsyncs it, and inserts it into the memtable with the mutex released,
+// then publishes the new sequence number. Only the leader touches the log and
+// the memtable's write side, so those need no lock of their own.
 class DBImpl {
  public:
   static Result<std::unique_ptr<DBImpl>> Open(const Options& options);
@@ -78,6 +87,7 @@ class DBImpl {
   [[nodiscard]] DBStats GetStats();
 
   // Test hooks. ForTest methods may block and are not meant for production.
+  std::size_t QueuedWritersForTest();         // writers waiting behind the leader
   void WaitForFlush();                        // until no flush is pending or running
   Status FlushMemTableForTest();              // flushes whatever the memtable holds
   Status CompactLevelForTest(int level);      // all of `level` into level + 1
@@ -99,8 +109,22 @@ class DBImpl {
   // Flushes `mem` to a new level-0 table and records it in `edit`. Called with
   // mutex_ held; releases it around the I/O if `lock` is non-null.
   Status WriteLevel0Table(MemTable* mem, VersionEdit* edit, std::unique_lock<std::mutex>* lock);
+  // A Write waiting its turn, or leading a commit group.
+  struct Writer {
+    const WriteBatch* batch = nullptr;  // null: switch the memtable (flush hook)
+    bool sync = false;
+    bool done = false;
+    Status status;
+    std::condition_variable cv;
+  };
+  Status WriteImpl(const WriteOptions& options, const WriteBatch* batch);
+
   // The rest of these are called with mutex_ held.
-  Status MakeRoomForWrite(std::unique_lock<std::mutex>* lock);
+  // `force` switches a non-empty memtable even if it has room.
+  Status MakeRoomForWrite(std::unique_lock<std::mutex>* lock, bool force);
+  // Merges the batches queued behind the leader into group_batch_ and points
+  // *last_writer at the last writer included.
+  void BuildBatchGroup(Writer** last_writer);
   // Makes the active memtable immutable, on a fresh log, for the flush.
   Status SwitchMemTable();
   void DeleteObsoleteFiles();
@@ -141,6 +165,9 @@ class DBImpl {
   SequenceNumber last_sequence_ = 0;
   std::set<std::uint64_t> pending_outputs_;  // tables being built: never GC'd
   SnapshotList snapshots_;
+  std::deque<Writer*> writers_;           // front is the leader
+  std::condition_variable writers_idle_;  // the queue just became empty
+  WriteBatch group_batch_;                // the leader's merged batch; only the leader uses it
   DBStats stats_;
   // Per level, the user key after which the next automatic compaction starts.
   std::array<std::string, kNumLevels> compact_next_start_;
