@@ -1,6 +1,7 @@
 #include "db/db_impl.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -451,6 +452,13 @@ void DBImpl::BuildBatchGroup(Writer** last_writer) {
     if (size > max_size) {
       break;
     }
+    // Append refuses a count overflow without applying the batch; this
+    // writer would then be acknowledged unwritten. The size cap makes that
+    // unreachable, but the check keeps it impossible rather than unlikely.
+    if (WriteBatchInternal::Count(group_batch_) >
+        std::numeric_limits<std::uint32_t>::max() - writer->batch->Count()) {
+      break;
+    }
     group_batch_.Append(*writer->batch);
     *last_writer = writer;
   }
@@ -530,7 +538,11 @@ Status DBImpl::FlushMemTableForTest() {
   // Through the writer queue, so the switch never races a leader's log write.
   STRATA_RETURN_IF_ERROR(WriteImpl(WriteOptions{}, nullptr));
   std::unique_lock<std::mutex> lock(mutex_);
-  background_done_.wait(lock, [this] { return imm_ == nullptr || !background_error_.ok(); });
+  background_done_.wait(lock,
+                        [this] { return imm_ == nullptr || !background_error_.ok() || closed_; });
+  if (closed_ && imm_ != nullptr) {
+    return Status::InvalidArgument("database closed before the flush finished");
+  }
   return background_error_;
 }
 

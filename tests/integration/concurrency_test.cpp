@@ -46,6 +46,11 @@ class GatedSyncEnv final : public EnvWrapper {
     const std::lock_guard<std::mutex> guard(mutex_);
     gated_ = true;
   }
+  // The `n`th log Sync from now (1-based) fails with IoError.
+  void FailSyncNumber(int n) {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    syncs_until_failure_ = n;
+  }
   void Release() {
     {
       const std::lock_guard<std::mutex> guard(mutex_);
@@ -66,7 +71,9 @@ class GatedSyncEnv final : public EnvWrapper {
     Status Append(Slice data) override { return base_->Append(data); }
     Status Flush() override { return base_->Flush(); }
     Status Sync() override {
-      env_->HoldIfGated();
+      if (env_->HoldIfGatedAndCheckFailure()) {
+        return Status::IoError("injected log sync failure");
+      }
       return base_->Sync();
     }
     Status Close() override { return base_->Close(); }
@@ -76,18 +83,36 @@ class GatedSyncEnv final : public EnvWrapper {
     std::unique_ptr<WritableFile> base_;
   };
 
-  void HoldIfGated() {
+  // Holds while gated; returns true if this sync is the one set to fail.
+  bool HoldIfGatedAndCheckFailure() {
     std::unique_lock<std::mutex> lock(mutex_);
     ++syncs_held_;
     changed_.notify_all();
     changed_.wait(lock, [this] { return !gated_; });
     --syncs_held_;
+    return syncs_until_failure_ > 0 && --syncs_until_failure_ == 0;
   }
 
   std::mutex mutex_;
   std::condition_variable changed_;
   bool gated_ = false;
   int syncs_held_ = 0;
+  int syncs_until_failure_ = 0;
+};
+
+// Re-opens the gate on every exit path, so a failed assertion cannot leave a
+// writer parked in Sync and the test's futures blocking forever.
+class ReleaseOnExit {
+ public:
+  explicit ReleaseOnExit(GatedSyncEnv* env) : env_(env) {}
+  ReleaseOnExit(const ReleaseOnExit&) = delete;
+  ReleaseOnExit& operator=(const ReleaseOnExit&) = delete;
+  ReleaseOnExit(ReleaseOnExit&&) = delete;
+  ReleaseOnExit& operator=(ReleaseOnExit&&) = delete;
+  ~ReleaseOnExit() { env_->Release(); }
+
+ private:
+  GatedSyncEnv* env_;
 };
 
 class ConcurrencyTest : public ::testing::Test {
@@ -109,6 +134,17 @@ class ConcurrencyTest : public ::testing::Test {
     }
     return value.ok() ? *value : value.status().ToString();
   }
+  // True once `count` writers wait behind the leader, false after a deadline.
+  bool WaitForQueuedWriters(std::size_t count) {
+    const auto deadline = std::chrono::steady_clock::now() + kGenerousTimeout;
+    while (db_->QueuedWritersForTest() < count) {
+      if (std::chrono::steady_clock::now() > deadline) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+  }
 
   TestDir dir_{"concurrency"};
   // Declared before db_ so it outlives the database, whose Close still syncs
@@ -123,6 +159,7 @@ TEST_F(ConcurrencyTest, ReadsDoNotWaitForAWritersFsync) {
   Open(&env_);
   ASSERT_TRUE(Put("existing", "value").ok());
   env_.Close();
+  const ReleaseOnExit release(&env_);
   auto writer = std::async(std::launch::async, [&] { return Put("synced", "v", true); });
   ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
 
@@ -140,6 +177,7 @@ TEST_F(ConcurrencyTest, ReadsDoNotWaitForAWritersFsync) {
 TEST_F(ConcurrencyTest, AWriteIsInvisibleUntilItsFsyncCompletes) {
   Open(&env_);
   env_.Close();
+  const ReleaseOnExit release(&env_);
   auto writer = std::async(std::launch::async, [&] { return Put("pending", "v", true); });
   ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
   EXPECT_EQ(Get("pending"), "NOT_FOUND");
@@ -154,6 +192,7 @@ TEST_F(ConcurrencyTest, WritersQueuedBehindAnFsyncAreCommittedAsOneGroup) {
   constexpr int kFollowers = 6;
   Open(&env_);
   env_.Close();
+  const ReleaseOnExit release(&env_);
   auto leader = std::async(std::launch::async, [&] { return Put("leader", "v", true); });
   ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
 
@@ -164,11 +203,7 @@ TEST_F(ConcurrencyTest, WritersQueuedBehindAnFsyncAreCommittedAsOneGroup) {
     }));
   }
   // Let every follower reach the queue before the leader finishes.
-  const auto deadline = std::chrono::steady_clock::now() + kGenerousTimeout;
-  while (db_->QueuedWritersForTest() < kFollowers && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  ASSERT_EQ(db_->QueuedWritersForTest(), kFollowers);
+  ASSERT_TRUE(WaitForQueuedWriters(kFollowers));
   const std::uint64_t groups_before = db_->GetStats().write_groups;
   env_.Release();
   EXPECT_TRUE(leader.get().ok());
@@ -189,16 +224,13 @@ TEST_F(ConcurrencyTest, WritersQueuedBehindAnFsyncAreCommittedAsOneGroup) {
 TEST_F(ConcurrencyTest, AnUnsyncedGroupNeverCarriesASyncedWrite) {
   Open(&env_);
   env_.Close();
+  const ReleaseOnExit release(&env_);
   auto holder = std::async(std::launch::async, [&] { return Put("holder", "v", true); });
   ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
   auto unsynced = std::async(std::launch::async, [&] { return Put("unsynced", "v", false); });
-  while (db_->QueuedWritersForTest() < 1) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
+  ASSERT_TRUE(WaitForQueuedWriters(1));
   auto synced = std::async(std::launch::async, [&] { return Put("synced", "v", true); });
-  while (db_->QueuedWritersForTest() < 2) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
+  ASSERT_TRUE(WaitForQueuedWriters(2));
   const std::uint64_t syncs_before = db_->GetStats().log_syncs;
   env_.Release();
   EXPECT_TRUE(holder.get().ok());
@@ -276,11 +308,19 @@ TEST_F(ConcurrencyTest, ManyWritersWithBackgroundWorkLoseNothing) {
     writer.join();
   }
   db_->WaitForCompactionsForTest();
-  for (int writer = 0; writer < kWriters; ++writer) {
-    for (int slot = 0; slot < 100; ++slot) {
-      const int last = kWritesEach - 100 + slot;
-      EXPECT_EQ(Get("w" + std::to_string(writer) + "-" + std::to_string(slot)),
-                std::to_string(last));
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int writer = 0; writer < kWriters; ++writer) {
+      for (int slot = 0; slot < 100; ++slot) {
+        const int last = kWritesEach - 100 + slot;
+        EXPECT_EQ(Get("w" + std::to_string(writer) + "-" + std::to_string(slot)),
+                  std::to_string(last))
+            << (pass == 0 ? "before" : "after") << " reopening";
+      }
+    }
+    if (pass == 0) {
+      ASSERT_TRUE(db_->Close().ok());
+      db_ = nullptr;
+      Open();
     }
   }
 }
@@ -292,6 +332,7 @@ TEST_F(ConcurrencyTest, CloseWithWritersInFlightReturnsEveryCaller) {
   Open();
   std::atomic<int> acknowledged{0};
   std::atomic<int> refused{0};
+  std::vector<std::atomic<int>> acknowledged_by(kWriters);
   std::vector<std::thread> writers;
   for (int writer = 0; writer < kWriters; ++writer) {
     writers.emplace_back([&, writer] {
@@ -300,6 +341,7 @@ TEST_F(ConcurrencyTest, CloseWithWritersInFlightReturnsEveryCaller) {
             Put("c" + std::to_string(writer) + "-" + std::to_string(index), "v", index % 7 == 0);
         if (status.ok()) {
           ++acknowledged;
+          acknowledged_by[static_cast<std::size_t>(writer)] = index + 1;
         } else {
           EXPECT_TRUE(status.IsInvalidArgument()) << status.ToString();
           ++refused;
@@ -318,7 +360,60 @@ TEST_F(ConcurrencyTest, CloseWithWritersInFlightReturnsEveryCaller) {
   EXPECT_EQ(refused.load(), kWriters);
   db_ = nullptr;
   Open();
-  EXPECT_EQ(Get("c0-0"), "v");
+  // A clean close makes every acknowledged write durable.
+  for (int writer = 0; writer < kWriters; ++writer) {
+    for (int index = 0; index < acknowledged_by[static_cast<std::size_t>(writer)].load(); ++index) {
+      ASSERT_EQ(Get("c" + std::to_string(writer) + "-" + std::to_string(index)), "v")
+          << "writer " << writer << " write " << index;
+    }
+  }
+}
+
+// A log sync that fails for a whole group: every writer in that group gets
+// the error, and the database refuses writes from then on.
+TEST_F(ConcurrencyTest, ASyncFailureFailsEveryWriterInTheGroup) {
+  constexpr int kFollowers = 5;
+  Open(&env_);
+  env_.Close();
+  const ReleaseOnExit release(&env_);
+  env_.FailSyncNumber(2);  // the leader's sync succeeds; the followers' group fails
+  auto leader = std::async(std::launch::async, [&] { return Put("leader", "v", true); });
+  ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
+  std::vector<std::future<Status>> followers;
+  for (int index = 0; index < kFollowers; ++index) {
+    followers.push_back(std::async(std::launch::async, [this, index] {
+      return Put("follower" + std::to_string(index), "v", true);
+    }));
+  }
+  ASSERT_TRUE(WaitForQueuedWriters(kFollowers));
+  const std::uint64_t groups_before = db_->GetStats().write_groups;
+  env_.Release();
+  EXPECT_TRUE(leader.get().ok());
+  for (auto& follower : followers) {
+    EXPECT_TRUE(follower.get().IsIoError()) << "a follower was acknowledged without its fsync";
+  }
+  EXPECT_EQ(db_->GetStats().write_groups - groups_before, 1U)
+      << "only the leader's group committed; the failed group must not count";
+  EXPECT_TRUE(Put("later", "v").IsIoError()) << "writes after a failed sync must be refused";
+}
+
+// Close must not close the log under a leader that is still in its fsync
+// with the mutex released.
+TEST_F(ConcurrencyTest, CloseWaitsForALeaderInItsFsync) {
+  Open(&env_);
+  env_.Close();
+  const ReleaseOnExit release(&env_);
+  auto leader = std::async(std::launch::async, [&] { return Put("in flight", "v", true); });
+  ASSERT_TRUE(env_.WaitUntilASyncIsHeld());
+  auto closing = std::async(std::launch::async, [&] { return db_->Close(); });
+  EXPECT_EQ(closing.wait_for(std::chrono::milliseconds(300)), std::future_status::timeout)
+      << "Close returned while a leader was still writing the log";
+  env_.Release();
+  EXPECT_TRUE(leader.get().ok());
+  EXPECT_TRUE(closing.get().ok());
+  db_ = nullptr;
+  Open();
+  EXPECT_EQ(Get("in flight"), "v");
 }
 
 }  // namespace
