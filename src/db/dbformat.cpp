@@ -25,13 +25,29 @@ bool ParseInternalKey(Slice internal_key, ParsedInternalKey* result) noexcept {
   return true;
 }
 
+namespace {
+
+// A key too short to hold a trailer is malformed. Ordering it by its bytes, as
+// if its trailer were zero, keeps every comparison inside the key; whoever
+// parses the key then reports Corruption.
+Slice UserKeyOrWhole(Slice key) {
+  return key.size() >= kInternalKeyTrailerSize ? ExtractUserKey(key) : key;
+}
+std::uint64_t TrailerOrZero(Slice key) {
+  return key.size() >= kInternalKeyTrailerSize
+             ? DecodeFixed64(key.data() + key.size() - kInternalKeyTrailerSize)
+             : 0;
+}
+
+}  // namespace
+
 int InternalKeyComparator::Compare(Slice a, Slice b) const {
-  const int by_user_key = user_comparator_->Compare(ExtractUserKey(a), ExtractUserKey(b));
+  const int by_user_key = user_comparator_->Compare(UserKeyOrWhole(a), UserKeyOrWhole(b));
   if (by_user_key != 0) {
     return by_user_key;
   }
-  const std::uint64_t trailer_a = DecodeFixed64(a.data() + a.size() - kInternalKeyTrailerSize);
-  const std::uint64_t trailer_b = DecodeFixed64(b.data() + b.size() - kInternalKeyTrailerSize);
+  const std::uint64_t trailer_a = TrailerOrZero(a);
+  const std::uint64_t trailer_b = TrailerOrZero(b);
   // Descending: the larger trailer (newer sequence) sorts first.
   if (trailer_a > trailer_b) {
     return -1;

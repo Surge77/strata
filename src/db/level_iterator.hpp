@@ -16,8 +16,11 @@ namespace strata {
 // merging, and opens each one only when the scan reaches it.
 //
 // A table that cannot be opened or read ends the iteration: Valid() becomes
-// false and status() reports why. `tables` must outlive the iterator.
+// false and status() reports why. `tables` and `files` (a Version's list,
+// pinned by the caller) must outlive the iterator; the list is not copied,
+// so creating an iterator costs nothing per table.
 std::unique_ptr<Iterator> NewLevelIterator(const InternalKeyComparator* comparator,
-                                           TableCache* tables, std::vector<FileMetaData> files);
+                                           TableCache* tables,
+                                           const std::vector<FileMetaData>* files);
 
 }  // namespace strata

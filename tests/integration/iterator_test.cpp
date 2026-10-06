@@ -5,6 +5,7 @@
 #include "strata/db.hpp"
 
 #include <atomic>
+#include <future>
 #include <map>
 #include <memory>
 #include <random>
@@ -132,6 +133,38 @@ TEST_F(IteratorTest, ReadsAtAnExplicitSnapshot) {
   ASSERT_TRUE(db_->ReleaseSnapshot(snapshot).ok());
   ASSERT_TRUE(db_->CompactLevelForTest(0).ok());
   EXPECT_EQ(Scan(it.get()), before) << "the iterator outlives the snapshot it was made from";
+}
+
+// A synced group inserts into the memtable with the mutex released and only
+// then publishes its sequence numbers. An iterator (or Get) created in that
+// window must not see the group.
+TEST_F(IteratorTest, AGroupInsertedButNotYetPublishedIsInvisible) {
+  Open();
+  Put("before", "v");
+  const Model before = model_;
+  std::promise<void> inserted;
+  std::promise<void> release;
+  std::shared_future<void> released = release.get_future().share();
+  db_->SetAfterMemTableInsertHookForTest([&inserted, released] {
+    inserted.set_value();
+    released.wait();
+  });
+  auto writer = std::async(std::launch::async, [this] {
+    WriteBatch batch;
+    batch.Put("in flight", "v");
+    return db_->Write(WriteOptions{.sync = true}, batch);
+  });
+  inserted.get_future().wait();  // the entry is in the memtable, unpublished
+
+  auto it = db_->NewIterator(ReadOptions{});
+  EXPECT_EQ(Scan(it.get()), before) << "an unpublished group leaked into a scan";
+  EXPECT_TRUE(db_->Get(ReadOptions{}, "in flight").status().IsNotFound());
+  release.set_value();
+  ASSERT_TRUE(writer.get().ok());
+  db_->SetAfterMemTableInsertHookForTest(nullptr);
+  EXPECT_EQ(Scan(it.get()), before) << "and the iterator stays a snapshot";
+  model_["in flight"] = "v";
+  ExpectMatchesModel();
 }
 
 TEST_F(IteratorTest, BoundsLimitTheScan) {
@@ -264,8 +297,11 @@ TEST_F(IteratorTest, ScansMatchTheModelUnderConcurrentWrites) {
   std::vector<std::thread> writers;
   for (int writer = 0; writer < kWriters; ++writer) {
     writers.emplace_back([this, writer, &batches] {
+      int index = 0;
       for (const WriteBatch& batch : batches[static_cast<std::size_t>(writer)]) {
-        ASSERT_TRUE(db_->Write(WriteOptions{}, batch).ok());
+        // Every tenth batch is synced: its group inserts into the memtable
+        // with the mutex released, so scans race genuinely in-flight entries.
+        ASSERT_TRUE(db_->Write(WriteOptions{.sync = ++index % 10 == 0}, batch).ok());
       }
     });
   }
@@ -291,8 +327,9 @@ TEST_F(IteratorTest, ScansMatchTheModelUnderConcurrentWrites) {
     }
     ++scans;
   };
+  constexpr int kMinimumScans = 10;
   std::thread scanner([&] {
-    while (!writers_done.load()) {
+    while (!writers_done.load() || scans < kMinimumScans) {
       check_one_scan();
     }
   });
@@ -302,7 +339,6 @@ TEST_F(IteratorTest, ScansMatchTheModelUnderConcurrentWrites) {
   writers_done = true;
   scanner.join();
   check_one_scan();  // and once at rest
-  EXPECT_GT(scans, 5) << "the scanner must have overlapped the writers";
   EXPECT_EQ(mismatches, 0) << "a scan saw a state no writer ever produced";
 }
 

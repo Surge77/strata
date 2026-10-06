@@ -87,7 +87,7 @@ Status Version::AddIterators(TableCache* tables,
   }
   for (int level = 1; level < kNumLevels; ++level) {
     if (!files(level).empty()) {
-      out->push_back(NewLevelIterator(comparator_, tables, files(level)));
+      out->push_back(NewLevelIterator(comparator_, tables, &files(level)));
     }
   }
   return Status::Ok();

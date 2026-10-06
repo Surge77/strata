@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "db/dbformat.hpp"
+#include "table/merger.hpp"
 #include "util/comparator.hpp"
 
 namespace strata {
@@ -176,6 +177,39 @@ TEST(DBIterTest, AMalformedInternalKeyStopsTheScanWithCorruption) {
   it->Next();
   EXPECT_FALSE(it->Valid());
   EXPECT_TRUE(it->status().IsCorruption());
+}
+
+// A key too short to hold a trailer, merged with a healthy child, so the
+// merging iterator compares it before DBIter parses it. Neither may read
+// outside the key (ASan checks), and the scan ends with Corruption in both
+// directions.
+TEST(DBIterTest, AShortKeyInAMergedStreamIsCorruptionNotAnOutOfBoundsRead) {
+  std::string a;
+  std::string c;
+  AppendInternalKey(&a, ParsedInternalKey{"a", 1, ValueType::kValue});
+  AppendInternalKey(&c, ParsedInternalKey{"c", 2, ValueType::kValue});
+  for (const bool forward : {true, false}) {
+    std::vector<std::unique_ptr<Iterator>> children;
+    children.push_back(std::make_unique<InternalVectorIterator>(
+        std::vector<std::pair<std::string, std::string>>{{a, "1"}, {c, "3"}}));
+    children.push_back(std::make_unique<InternalVectorIterator>(
+        std::vector<std::pair<std::string, std::string>>{{"b", "bad"}}));
+    auto merged =
+        table::NewMergingIterator(&InternalVectorIterator::Comparator(), std::move(children));
+    auto it = NewDBIterator(BytewiseComparator(), std::move(merged), kMaxSequenceNumber, {}, {});
+    int seen = 0;
+    if (forward) {
+      for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        ++seen;
+      }
+    } else {
+      for (it->SeekToLast(); it->Valid(); it->Prev()) {
+        ++seen;
+      }
+    }
+    EXPECT_LT(seen, 2) << (forward ? "forward" : "backward") << ": the scan must stop at it";
+    EXPECT_TRUE(it->status().IsCorruption()) << (forward ? "forward" : "backward");
+  }
 }
 
 // Random histories, random read points, random walks mixing Next, Prev, and

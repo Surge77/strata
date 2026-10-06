@@ -393,6 +393,9 @@ Status DBImpl::WriteImpl(const WriteOptions& options, const WriteBatch* batch) {
     if (status.ok()) {
       status = InsertInto(group_batch_, mem);
     }
+    if (release_mutex && after_memtable_insert_hook_) {
+      after_memtable_insert_hook_();
+    }
     if (release_mutex) {
       lock.lock();
     }

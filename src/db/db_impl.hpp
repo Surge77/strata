@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -96,6 +97,10 @@ class DBImpl {
   void WaitForCompactionsForTest();           // until no automatic compaction is due
   void PauseCompactionsForTest(bool paused);  // automatic ones only
   void PauseFlushesForTest(bool paused);      // the immutable memtable waits
+  // Runs inside a synced group's commit, after its memtable insert and before
+  // its sequence numbers are published -- with the mutex released. Set it
+  // before any writes; it is read without the mutex.
+  void SetAfterMemTableInsertHookForTest(std::function<void()> hook);
   bool HasImmutableMemTableForTest();
   std::vector<FileMetaData> FilesAtLevelForTest(int level);
   std::uint64_t LevelBytesForTest(int level);
@@ -180,6 +185,7 @@ class DBImpl {
   Status manual_compaction_status_;
   bool compactions_paused_ = false;
   bool flushes_paused_ = false;
+  std::function<void()> after_memtable_insert_hook_;  // test hook, see above
   Status background_error_;
   bool closed_ = false;
   bool shutting_down_ = false;

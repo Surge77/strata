@@ -9,8 +9,8 @@ namespace {
 class LevelIterator final : public Iterator {
  public:
   LevelIterator(const InternalKeyComparator* comparator, TableCache* tables,
-                std::vector<FileMetaData> files)
-      : comparator_(comparator), tables_(tables), files_(std::move(files)) {}
+                const std::vector<FileMetaData>* files)
+      : comparator_(comparator), tables_(tables), files_(*files) {}
 
   [[nodiscard]] bool Valid() const override {
     return status_.ok() && data_ != nullptr && data_->Valid();
@@ -121,7 +121,7 @@ class LevelIterator final : public Iterator {
 
   const InternalKeyComparator* const comparator_;
   TableCache* const tables_;
-  const std::vector<FileMetaData> files_;
+  const std::vector<FileMetaData>& files_;
   std::unique_ptr<Iterator> data_;
   std::size_t index_ = 0;
   Status status_;
@@ -130,8 +130,9 @@ class LevelIterator final : public Iterator {
 }  // namespace
 
 std::unique_ptr<Iterator> NewLevelIterator(const InternalKeyComparator* comparator,
-                                           TableCache* tables, std::vector<FileMetaData> files) {
-  return std::make_unique<LevelIterator>(comparator, tables, std::move(files));
+                                           TableCache* tables,
+                                           const std::vector<FileMetaData>* files) {
+  return std::make_unique<LevelIterator>(comparator, tables, files);
 }
 
 }  // namespace strata

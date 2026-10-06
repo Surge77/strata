@@ -255,6 +255,10 @@ void DBImpl::PauseFlushesForTest(bool paused) {
   background_work_.notify_all();
 }
 
+void DBImpl::SetAfterMemTableInsertHookForTest(std::function<void()> hook) {
+  after_memtable_insert_hook_ = std::move(hook);
+}
+
 bool DBImpl::HasImmutableMemTableForTest() {
   const std::lock_guard<std::mutex> guard(mutex_);
   return imm_ != nullptr;

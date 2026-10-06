@@ -68,7 +68,11 @@ class DBIter final : public Iterator {
           Invalidate();
           return;
         }
-        if (user_comparator_->Compare(ExtractUserKey(iter_->key()), saved_key_) < 0) {
+        ParsedInternalKey parsed;
+        if (!ParseCurrent(&parsed)) {
+          return;
+        }
+        if (user_comparator_->Compare(parsed.user_key, saved_key_) < 0) {
           break;
         }
       }
@@ -79,6 +83,7 @@ class DBIter final : public Iterator {
   }
 
   void Seek(Slice target) override {
+    status_ = Status::Ok();  // a reposition starts afresh; a persisting fault recurs
     direction_ = Direction::kForward;
     saved_value_.clear();
     Slice start = target;
@@ -101,6 +106,7 @@ class DBIter final : public Iterator {
       Seek(*bounds_.lower);
       return;
     }
+    status_ = Status::Ok();
     direction_ = Direction::kForward;
     saved_value_.clear();
     iter_->SeekToFirst();
@@ -113,6 +119,7 @@ class DBIter final : public Iterator {
   }
 
   void SeekToLast() override {
+    status_ = Status::Ok();
     direction_ = Direction::kReverse;
     saved_value_.clear();
     if (bounds_.upper) {
@@ -161,6 +168,10 @@ class DBIter final : public Iterator {
       if (!ParseCurrent(&parsed)) {
         return;
       }
+      if (bounds_.upper && user_comparator_->Compare(parsed.user_key, *bounds_.upper) >= 0) {
+        Invalidate();  // past the range: stop rather than skip on through it
+        return;
+      }
       if (parsed.sequence <= sequence_) {
         if (parsed.type == ValueType::kDeletion) {
           // Hide every older version of this key.
@@ -187,6 +198,10 @@ class DBIter final : public Iterator {
         ParsedInternalKey parsed;
         if (!ParseCurrent(&parsed)) {
           return;
+        }
+        if (value_type == ValueType::kDeletion && bounds_.lower &&
+            user_comparator_->Compare(parsed.user_key, *bounds_.lower) < 0) {
+          break;  // below the range with nothing found: stop rather than skip on
         }
         if (parsed.sequence <= sequence_) {
           if (value_type != ValueType::kDeletion &&
