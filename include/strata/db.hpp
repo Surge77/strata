@@ -1,5 +1,6 @@
 #pragma once
 
+#include "strata/iterator.hpp"
 #include "strata/options.hpp"
 #include "strata/result.hpp"
 #include "strata/slice.hpp"
@@ -62,6 +63,19 @@ class DB {
 
   // The value of `key`, or NotFound if it is absent or deleted.
   [[nodiscard]] Result<std::string> Get(Slice key, const ReadOptions& options = {}) const;
+
+  // An iterator over the database in key order, as of now (or as of
+  // options.snapshot), limited to [options.lower_bound, options.upper_bound).
+  // It is a consistent view: writes, deletes, and compactions after it was
+  // created do not change what it shows. It stays usable after the snapshot it
+  // used is released and after this DB is closed, as long as Options::env
+  // outlives it -- but tables below level 0 are opened only when the scan
+  // reaches them, so if the database is reopened and compacted meanwhile, the
+  // scan can stop with an error. A closed database returns an empty iterator
+  // whose status() is InvalidArgument. Each live iterator keeps the tables it
+  // has opened open, beyond Options::max_open_tables. Not thread-safe: one
+  // thread per iterator.
+  [[nodiscard]] std::unique_ptr<Iterator> NewIterator(const ReadOptions& options = {}) const;
 
   // A snapshot of the current state, for ReadOptions::snapshot. Release it
   // with ReleaseSnapshot before closing the database. Null if the database is

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/env.hpp"
+#include "strata/iterator.hpp"
 #include "strata/logger.hpp"
 #include "strata/options.hpp"
 #include "strata/result.hpp"
@@ -12,6 +13,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -76,6 +78,7 @@ class DBImpl {
 
   Status Write(const WriteOptions& options, const WriteBatch& batch);
   Result<std::string> Get(const ReadOptions& options, Slice key);
+  std::unique_ptr<Iterator> NewIterator(const ReadOptions& options);
 
   const Snapshot* GetSnapshot();
   Status ReleaseSnapshot(const Snapshot* snapshot);
@@ -94,6 +97,10 @@ class DBImpl {
   void WaitForCompactionsForTest();           // until no automatic compaction is due
   void PauseCompactionsForTest(bool paused);  // automatic ones only
   void PauseFlushesForTest(bool paused);      // the immutable memtable waits
+  // Runs inside a synced group's commit, after its memtable insert and before
+  // its sequence numbers are published -- with the mutex released. Set it
+  // before any writes; it is read without the mutex.
+  void SetAfterMemTableInsertHookForTest(std::function<void()> hook);
   bool HasImmutableMemTableForTest();
   std::vector<FileMetaData> FilesAtLevelForTest(int level);
   std::uint64_t LevelBytesForTest(int level);
@@ -141,15 +148,17 @@ class DBImpl {
   const Options options_;
   Env* const env_;
   const std::string dbname_;
-  const InternalKeyComparator internal_comparator_{BytewiseComparator()};
+  // Process-wide (see BytewiseInternalKeyComparator), so iterators and tables
+  // that point at it can outlive this DB.
+  const InternalKeyComparator& internal_comparator_ = *BytewiseInternalKeyComparator();
 
   // Declared first so it is released last.
   std::unique_ptr<FileLock> db_lock_;
   std::unique_ptr<Logger> owned_info_log_;
   Logger* info_log_ = nullptr;
-  // Declared before table_cache_, whose tables point into it.
-  std::unique_ptr<table::BlockCache> block_cache_;
-  std::unique_ptr<TableCache> table_cache_;
+  // Shared with live iterators, which may outlive this DB. It owns the block
+  // cache.
+  std::shared_ptr<TableCache> table_cache_;
 
   std::mutex mutex_;
   // Everything below is guarded by mutex_.
@@ -176,6 +185,7 @@ class DBImpl {
   Status manual_compaction_status_;
   bool compactions_paused_ = false;
   bool flushes_paused_ = false;
+  std::function<void()> after_memtable_insert_hook_;  // test hook, see above
   Status background_error_;
   bool closed_ = false;
   bool shutting_down_ = false;

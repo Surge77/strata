@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace strata {
@@ -81,6 +82,11 @@ struct ReadOptions {
   // Read the database as it was when this snapshot was taken (see
   // DB::GetSnapshot). Null reads the latest state.
   const Snapshot* snapshot = nullptr;
+
+  // For iterators only: keys below `lower_bound` (inclusive) and at or above
+  // `upper_bound` (exclusive) are outside the scan. Unset means unbounded.
+  std::optional<std::string> lower_bound = std::nullopt;
+  std::optional<std::string> upper_bound = std::nullopt;
 };
 
 }  // namespace strata

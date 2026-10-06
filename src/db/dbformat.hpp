@@ -82,6 +82,10 @@ class InternalKeyComparator final : public Comparator {
   const Comparator* user_comparator_;
 };
 
+// The internal comparator over bytewise user keys. One instance for the whole
+// process, so tables and iterators that point at it can outlive any DB.
+[[nodiscard]] const InternalKeyComparator* BytewiseInternalKeyComparator();
+
 // The key a point lookup searches for: every representation the memtable and
 // SSTables need, built once per Get.
 //

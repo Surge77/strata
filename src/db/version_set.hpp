@@ -47,6 +47,11 @@ class Version {
   Result<MemTable::LookupResult> Get(const LookupKey& key, std::string* value,
                                      TableCache* tables) const;
 
+  // Appends iterators that together cover every table of this Version, for a
+  // merged scan: one per level-0 table (they overlap), and one concatenating
+  // iterator per deeper level (its tables do not). `tables` must outlive them.
+  Status AddIterators(TableCache* tables, std::vector<std::unique_ptr<Iterator>>* out) const;
+
  private:
   friend class VersionSet;
 

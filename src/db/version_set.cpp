@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "db/filename.hpp"
+#include "db/level_iterator.hpp"
 #include "log/log_reader.hpp"
 
 namespace strata {
@@ -76,6 +77,20 @@ Result<MemTable::LookupResult> Version::Get(const LookupKey& key, std::string* v
     }
   }
   return MemTable::LookupResult::kNotPresent;
+}
+
+Status Version::AddIterators(TableCache* tables,
+                             std::vector<std::unique_ptr<Iterator>>* out) const {
+  for (const FileMetaData& file : files_[0]) {
+    STRATA_ASSIGN_OR_RETURN(auto it, tables->NewIterator(file.number, file.file_size));
+    out->push_back(std::move(it));
+  }
+  for (int level = 1; level < kNumLevels; ++level) {
+    if (!files(level).empty()) {
+      out->push_back(NewLevelIterator(comparator_, tables, &files(level)));
+    }
+  }
+  return Status::Ok();
 }
 
 VersionSet::VersionSet(std::string dbname, Env* env, const InternalKeyComparator* comparator)

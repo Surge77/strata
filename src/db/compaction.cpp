@@ -10,28 +10,6 @@
 namespace strata {
 namespace {
 
-// A table's iterator together with the table it reads, so the table stays
-// open for as long as the merge needs it.
-class TableHoldingIterator final : public Iterator {
- public:
-  explicit TableHoldingIterator(std::shared_ptr<const table::Table> table)
-      : table_(std::move(table)), it_(table_->NewIterator()) {}
-
-  [[nodiscard]] bool Valid() const override { return it_->Valid(); }
-  void SeekToFirst() override { it_->SeekToFirst(); }
-  void SeekToLast() override { it_->SeekToLast(); }
-  void Seek(Slice target) override { it_->Seek(target); }
-  void Next() override { it_->Next(); }
-  void Prev() override { it_->Prev(); }
-  [[nodiscard]] Slice key() const override { return it_->key(); }
-  [[nodiscard]] Slice value() const override { return it_->value(); }
-  [[nodiscard]] Status status() const override { return it_->status(); }
-
- private:
-  std::shared_ptr<const table::Table> table_;
-  std::unique_ptr<Iterator> it_;
-};
-
 // True if no level below `output_level` can hold `user_key`, so a tombstone
 // for it has nothing left to hide.
 bool IsBaseLevelForKey(const Version& version, int output_level, const Comparator* user,
@@ -188,8 +166,8 @@ Status RunCompaction(const CompactionJobOptions& options, const Compaction& comp
   std::vector<std::unique_ptr<Iterator>> children;
   for (const auto& level_inputs : compaction.inputs) {
     for (const FileMetaData& file : level_inputs) {
-      STRATA_ASSIGN_OR_RETURN(auto table, options.tables->Find(file.number, file.file_size));
-      children.push_back(std::make_unique<TableHoldingIterator>(std::move(table)));
+      STRATA_ASSIGN_OR_RETURN(auto child, options.tables->NewIterator(file.number, file.file_size));
+      children.push_back(std::move(child));
       stats->bytes_read += file.file_size;
     }
   }
