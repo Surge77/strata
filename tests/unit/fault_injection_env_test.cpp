@@ -226,8 +226,33 @@ TEST_F(FaultInjectionEnvTest, ReadFailureHitsOnlyMatchingFiles) {
 
   env_.SetReadFailure(std::nullopt);
   const auto recovered = (*table)->Read(0, 5, scratch);
-  ASSERT_TRUE(recovered.ok()) << "failure is checked per read, not per open";
+  ASSERT_TRUE(recovered.ok());
   EXPECT_EQ(strata::ToString(*recovered), "table");
+}
+
+TEST_F(FaultInjectionEnvTest, ReadFailureCanWaitForSomeReadsToSucceed) {
+  WriteDurably(&env_, dir_.File("a.sst"), "table bytes");
+  auto table = env_.NewRandomAccessFile(dir_.File("a.sst"));
+  ASSERT_TRUE(table.ok());
+  env_.SetReadFailure(".sst", 2);
+  char scratch[16];
+  EXPECT_TRUE((*table)->Read(0, 1, scratch).ok());
+  EXPECT_TRUE((*table)->Read(1, 1, scratch).ok());
+  EXPECT_TRUE((*table)->Read(2, 1, scratch).status().IsIoError());
+  EXPECT_TRUE((*table)->Read(3, 1, scratch).status().IsIoError()) << "and every read after";
+}
+
+TEST_F(FaultInjectionEnvTest, ReadFailureCoversSequentialReads) {
+  WriteDurably(&env_, dir_.File("MANIFEST-000001"), "manifest bytes");
+  env_.SetReadFailure("MANIFEST-");
+  auto manifest = env_.NewSequentialFile(dir_.File("MANIFEST-000001"));
+  ASSERT_TRUE(manifest.ok());
+  char scratch[16];
+  EXPECT_TRUE((*manifest)->Read(8, scratch).status().IsIoError());
+  env_.SetReadFailure(std::nullopt);
+  const auto recovered = (*manifest)->Read(8, scratch);
+  ASSERT_TRUE(recovered.ok()) << "failure is checked per read, not per open";
+  EXPECT_EQ(strata::ToString(*recovered), "manifest") << "the failed read consumed nothing";
 }
 
 }  // namespace

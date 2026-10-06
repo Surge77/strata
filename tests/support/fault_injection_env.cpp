@@ -43,7 +43,7 @@ class FaultWritableFile final : public WritableFile {
 
   Status Sync() override {
     STRATA_RETURN_IF_ERROR(env_->CheckWritable());
-    STRATA_RETURN_IF_ERROR(env_->InjectedSyncFailure());
+    STRATA_RETURN_IF_ERROR(env_->InjectedSyncFailure(path_));
     STRATA_RETURN_IF_ERROR(base_->Sync());
     return env_->RecordSync(path_);
   }
@@ -59,7 +59,7 @@ class FaultWritableFile final : public WritableFile {
 // Forwards reads to a real file unless the env is injecting read errors.
 class FaultRandomAccessFile final : public RandomAccessFile {
  public:
-  FaultRandomAccessFile(const FaultInjectionEnv* env, std::string path,
+  FaultRandomAccessFile(FaultInjectionEnv* env, std::string path,
                         std::unique_ptr<RandomAccessFile> base)
       : env_(env), path_(std::move(path)), base_(std::move(base)) {}
 
@@ -69,9 +69,27 @@ class FaultRandomAccessFile final : public RandomAccessFile {
   }
 
  private:
-  const FaultInjectionEnv* env_;
+  FaultInjectionEnv* env_;
   std::string path_;
   std::unique_ptr<RandomAccessFile> base_;
+};
+
+class FaultSequentialFile final : public SequentialFile {
+ public:
+  FaultSequentialFile(FaultInjectionEnv* env, std::string path,
+                      std::unique_ptr<SequentialFile> base)
+      : env_(env), path_(std::move(path)), base_(std::move(base)) {}
+
+  Result<Slice> Read(std::size_t n, char* scratch) override {
+    STRATA_RETURN_IF_ERROR(env_->InjectedReadFailure(path_));
+    return base_->Read(n, scratch);
+  }
+  Status Skip(std::uint64_t n) override { return base_->Skip(n); }
+
+ private:
+  FaultInjectionEnv* env_;
+  std::string path_;
+  std::unique_ptr<SequentialFile> base_;
 };
 
 }  // namespace
@@ -85,9 +103,16 @@ Result<std::unique_ptr<RandomAccessFile>> FaultInjectionEnv::NewRandomAccessFile
       std::make_unique<FaultRandomAccessFile>(this, path, std::move(file)));
 }
 
-void FaultInjectionEnv::SetDiskFull(std::string path_suffix, std::uint64_t bytes_left) {
+Result<std::unique_ptr<SequentialFile>> FaultInjectionEnv::NewSequentialFile(
+    const std::string& path) {
+  STRATA_ASSIGN_OR_RETURN(auto file, target()->NewSequentialFile(path));
+  return std::unique_ptr<SequentialFile>(
+      std::make_unique<FaultSequentialFile>(this, path, std::move(file)));
+}
+
+void FaultInjectionEnv::SetDiskFull(std::string path_pattern, std::uint64_t bytes_left) {
   const std::lock_guard<std::mutex> guard(mutex_);
-  disk_full_ = DiskFull{.path_suffix = std::move(path_suffix), .bytes_left = bytes_left};
+  disk_full_ = DiskFull{.path_pattern = std::move(path_pattern), .bytes_left = bytes_left};
 }
 
 void FaultInjectionEnv::ClearDiskFull() {
@@ -97,7 +122,7 @@ void FaultInjectionEnv::ClearDiskFull() {
 
 std::uint64_t FaultInjectionEnv::AppendAllowance(const std::string& path, std::uint64_t bytes) {
   const std::lock_guard<std::mutex> guard(mutex_);
-  if (!disk_full_ || !path.ends_with(disk_full_->path_suffix)) {
+  if (!disk_full_ || path.find(disk_full_->path_pattern) == std::string::npos) {
     return bytes;
   }
   const std::uint64_t allowed = std::min(bytes, disk_full_->bytes_left);
@@ -105,17 +130,26 @@ std::uint64_t FaultInjectionEnv::AppendAllowance(const std::string& path, std::u
   return allowed;
 }
 
-void FaultInjectionEnv::SetReadFailure(std::optional<std::string> path_suffix) {
+void FaultInjectionEnv::SetReadFailure(std::optional<std::string> path_pattern,
+                                       std::uint64_t after_reads) {
   const std::lock_guard<std::mutex> guard(mutex_);
-  read_failure_suffix_ = std::move(path_suffix);
+  read_failure_.reset();
+  if (path_pattern) {
+    read_failure_ =
+        ReadFailure{.path_pattern = std::move(*path_pattern), .reads_left = after_reads};
+  }
 }
 
-Status FaultInjectionEnv::InjectedReadFailure(const std::string& path) const {
+Status FaultInjectionEnv::InjectedReadFailure(const std::string& path) {
   const std::lock_guard<std::mutex> guard(mutex_);
-  if (read_failure_suffix_ && path.ends_with(*read_failure_suffix_)) {
-    return Status::IoError(path + ": injected read error (EIO)");
+  if (!read_failure_ || path.find(read_failure_->path_pattern) == std::string::npos) {
+    return Status::Ok();
   }
-  return Status::Ok();
+  if (read_failure_->reads_left > 0) {
+    --read_failure_->reads_left;
+    return Status::Ok();
+  }
+  return Status::IoError(path + ": injected read error (EIO)");
 }
 
 Status FaultInjectionEnv::CheckWritable() {
@@ -144,9 +178,10 @@ std::uint64_t FaultInjectionEnv::mutating_ops() const {
   return mutating_ops_;
 }
 
-Status FaultInjectionEnv::InjectedSyncFailure() const {
+Status FaultInjectionEnv::InjectedSyncFailure(const std::string& path) const {
   const std::lock_guard<std::mutex> guard(mutex_);
-  return fail_syncs_ ? Status::IoError("injected sync failure") : Status::Ok();
+  const bool matches = path.find(sync_failure_pattern_) != std::string::npos;
+  return fail_syncs_ && matches ? Status::IoError(path + ": injected sync failure") : Status::Ok();
 }
 
 void FaultInjectionEnv::RecordAppend(const std::string& path, std::uint64_t bytes) {
@@ -167,9 +202,10 @@ void FaultInjectionEnv::SetFilesystemActive(bool active) {
   active_ = active;
 }
 
-void FaultInjectionEnv::SetSyncFailure(bool fail) {
+void FaultInjectionEnv::SetSyncFailure(bool fail, std::string path_pattern) {
   const std::lock_guard<std::mutex> guard(mutex_);
   fail_syncs_ = fail;
+  sync_failure_pattern_ = std::move(path_pattern);
 }
 
 std::uint64_t FaultInjectionEnv::sync_count() const {
@@ -299,7 +335,7 @@ Status FaultInjectionEnv::RenameFile(const std::string& from, const std::string&
 
 Status FaultInjectionEnv::SyncDir(const std::string& dir) {
   STRATA_RETURN_IF_ERROR(CheckWritable());
-  STRATA_RETURN_IF_ERROR(InjectedSyncFailure());
+  STRATA_RETURN_IF_ERROR(InjectedSyncFailure(dir));
   STRATA_RETURN_IF_ERROR(target()->SyncDir(dir));
 
   const std::lock_guard<std::mutex> guard(mutex_);

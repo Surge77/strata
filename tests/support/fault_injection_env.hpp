@@ -50,6 +50,7 @@ class FaultInjectionEnv final : public EnvWrapper {
   Result<std::unique_ptr<WritableFile>> NewWritableFile(const std::string& path) override;
   Result<std::unique_ptr<WritableFile>> NewAppendableFile(const std::string& path) override;
   Result<std::unique_ptr<RandomAccessFile>> NewRandomAccessFile(const std::string& path) override;
+  Result<std::unique_ptr<SequentialFile>> NewSequentialFile(const std::string& path) override;
   Status RemoveFile(const std::string& path) override;
   Status RenameFile(const std::string& from, const std::string& to) override;
   Status SyncDir(const std::string& dir) override;
@@ -68,20 +69,23 @@ class FaultInjectionEnv final : public EnvWrapper {
   // Mutating calls that succeeded since construction.
   [[nodiscard]] std::uint64_t mutating_ops() const;
 
-  // While set, Sync and SyncDir fail with IoError and have no durable effect.
-  void SetSyncFailure(bool fail);
+  // While set, Sync and SyncDir fail with IoError and have no durable effect;
+  // with a `path_pattern`, only for paths (or directories) containing it.
+  void SetSyncFailure(bool fail, std::string path_pattern = "");
 
-  // Appends to files whose path ends with `path_suffix` ("" for every file)
+  // Appends to files whose path contains `path_pattern` ("" for every file)
   // fail with IoError("No space left on device") once `bytes_left` more bytes
   // have been written. The append that crosses the limit first writes the
   // bytes that fit, as a real ENOSPC can.
-  void SetDiskFull(std::string path_suffix, std::uint64_t bytes_left);
+  void SetDiskFull(std::string path_pattern, std::uint64_t bytes_left);
   void ClearDiskFull();
 
-  // Reads from files whose path ends with `path_suffix` fail with IoError,
-  // like EIO from a failing disk; nullopt stops it. Checked on every read, so
-  // files opened earlier are affected too.
-  void SetReadFailure(std::optional<std::string> path_suffix);
+  // Reads from files whose path contains `path_pattern` fail with IoError,
+  // like EIO from a failing disk, after `after_reads` more reads from such
+  // files succeed; nullopt stops it. Covers random-access reads (tables) and
+  // sequential ones (log and MANIFEST replay), and is checked on every read,
+  // so files opened earlier are affected too.
+  void SetReadFailure(std::optional<std::string> path_pattern, std::uint64_t after_reads = 0);
 
   // Discards everything that was not durable (see the class comment).
   Status SimulatePowerLoss();
@@ -95,10 +99,10 @@ class FaultInjectionEnv final : public EnvWrapper {
   Status CheckWritable();
   void RecordAppend(const std::string& path, std::uint64_t bytes);
   Status RecordSync(const std::string& path);
-  Status InjectedSyncFailure() const;
+  Status InjectedSyncFailure(const std::string& path) const;
   // How many of `bytes` may be appended to `path` before the disk is full.
   std::uint64_t AppendAllowance(const std::string& path, std::uint64_t bytes);
-  Status InjectedReadFailure(const std::string& path) const;
+  Status InjectedReadFailure(const std::string& path);
 
  private:
   // How much of a file is guaranteed to survive power loss.
@@ -123,15 +127,20 @@ class FaultInjectionEnv final : public EnvWrapper {
   std::string DurableContents(const std::string& path);
 
   struct DiskFull {
-    std::string path_suffix;
+    std::string path_pattern;
     std::uint64_t bytes_left = 0;
+  };
+  struct ReadFailure {
+    std::string path_pattern;
+    std::uint64_t reads_left = 0;
   };
 
   mutable std::mutex mutex_;
   std::optional<DiskFull> disk_full_;
-  std::optional<std::string> read_failure_suffix_;
+  std::optional<ReadFailure> read_failure_;
   bool active_ = true;
   bool fail_syncs_ = false;
+  std::string sync_failure_pattern_;
   std::optional<std::uint64_t> ops_until_crash_;
   std::uint64_t mutating_ops_ = 0;
   std::uint64_t sync_count_ = 0;
