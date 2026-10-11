@@ -13,7 +13,12 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 10 complete; phase 11 (benchmarks) is next.**
+> **Status: Phase 11 complete; phase 12 (observability) is next.** Benchmarks run through
+> `stratabench` with a stated statistical protocol and an open-loop latency harness; see
+> [docs/benchmarks.md](docs/benchmarks.md). On the reference laptop most figures did not reach
+> the 5% CV gate, and that page says so instead of printing them as results. The open-loop run
+> found a real latency defect: the WAL rotation fsyncs while holding the DB mutex, which gives a
+> 62 ms p99 at half the maximum load. Fixing it is the next change.
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
 > by a clean `Close`) survives power loss. Each claim is backed by crash tests;
@@ -100,7 +105,7 @@ depend on, and it would make every benchmark number meaningless.
 | `docs/durability.md` | exactly what "durable" means here, and what it does not *(phase 3)* |
 | `docs/format/` | byte-level on-disk format specifications *(phases 2, 4, 5)* |
 | `docs/decisions/` | architecture decision records |
-| `docs/benchmarks.md` | measured results with full methodology *(phase 11)* |
+| [`docs/benchmarks.md`](docs/benchmarks.md) | measured results with full methodology |
 | `docs/limitations.md` | what this engine does not do *(phase 15)* |
 
 ## Non-goals
