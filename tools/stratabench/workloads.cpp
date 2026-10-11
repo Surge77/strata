@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <chrono>
 #include <latch>
+#include <numeric>
 #include <thread>
+
+#include "util/crc32c.hpp"
 
 namespace strata::bench {
 namespace {
@@ -18,10 +21,17 @@ constexpr std::uint64_t kMinSyncWrites = 100;
 constexpr std::uint64_t kScanLength = 100;  // entries read after each seek
 constexpr double kYcsbAReadFraction = 0.5;
 constexpr double kYcsbBReadFraction = 0.95;
+// A timed round checks its deadline once per chunk, not once per operation.
+constexpr std::uint64_t kChunkOps = 256;
+constexpr std::size_t kCalibrationBytes = 256 * 1024;
+constexpr double kBytesPerMegabyte = 1e6;
 // Spreads per-round, per-thread seeds far apart.
 constexpr std::uint64_t kRoundSeedStride = 1'000'003;
 constexpr std::uint64_t kThreadSeedStride = 7'919;
 constexpr std::uint64_t kGoldenGamma = 0x9E3779B97F4A7C15ULL;
+// MixedOp indexes: each thread of each round gets its own 2^40-wide range.
+constexpr unsigned kThreadIndexShift = 40;
+constexpr unsigned kRoundIndexShift = 48;
 
 std::uint64_t SeedFor(const BenchConfig& config, int round, int thread) {
   return config.seed + static_cast<std::uint64_t>(round) * kRoundSeedStride +
@@ -56,88 +66,123 @@ double Fill(const BenchConfig& config, bool random_keys, bool sync, int round) {
 
 double Reads(const BenchConfig& config, LoadedDb* loaded, KeyDistribution distribution,
              bool missing, int round) {
-  loaded->PrepareRound(config.cold);
+  loaded->PrepareRound(config.cold, /*writes=*/false);
   DBImpl* db = loaded->db();
-  const std::uint64_t total = config.reads_per_round();
-  const double seconds = TimeThreads(config.threads, [&](int thread) {
-    const Share share = ShareOf(total, thread, config.threads);
-    KeyChooser chooser(distribution, loaded->keys(), SeedFor(config, round, thread));
-    KeyBuffer key;
-    for (std::uint64_t index = share.begin; index < share.end; ++index) {
-      const std::uint64_t number = chooser.Next();
-      if (missing) {
-        if (const auto r = db->Get({}, FormatMissingKey(number, &key)); !r.status().IsNotFound()) {
-          Fail("get of a missing key", r.ok() ? Status::Corruption("found") : r.status());
+  const Timed timed = RunForDuration(config.threads, config.min_round, [&](int thread) {
+    return [db, missing,
+            chooser = KeyChooser(distribution, loaded->keys(), SeedFor(config, round, thread))](
+               std::uint64_t /*first*/, std::uint64_t count) mutable {
+      KeyBuffer key;
+      for (std::uint64_t op = 0; op < count; ++op) {
+        const std::uint64_t number = chooser.Next();
+        if (missing) {
+          const auto r = db->Get({}, FormatMissingKey(number, &key));
+          if (!r.status().IsNotFound()) {
+            Fail("get of a missing key", r.ok() ? Status::Corruption("found") : r.status());
+          }
+        } else if (const auto r = db->Get({}, FormatKey(number, &key)); !r.ok()) {
+          Fail("get", r.status());
         }
-      } else if (const auto r = db->Get({}, FormatKey(number, &key)); !r.ok()) {
-        Fail("get", r.status());
       }
-    }
+    };
   });
-  return static_cast<double>(total) / seconds;
+  return static_cast<double>(timed.operations) / timed.seconds;
 }
 
-double ScanFull(const BenchConfig& config, LoadedDb* loaded) {
-  loaded->PrepareRound(config.cold);
+// One full forward scan; fails unless it sees exactly every key.
+std::uint64_t ScanOnce(LoadedDb* loaded) {
+  auto it = loaded->db()->NewIterator({});
   std::uint64_t entries = 0;
-  std::unique_ptr<Iterator> it;
-  const double seconds = TimeThreads(1, [&](int) {
-    it = loaded->db()->NewIterator({});
-    for (it->SeekToFirst(); it->Valid(); it->Next()) {
-      ++entries;
-    }
-  });
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    ++entries;
+  }
   if (!it->status().ok() || entries != loaded->keys()) {
     Fail("scanfull", it->status().ok() ? Status::Corruption("wrong entry count") : it->status());
   }
+  return entries;
+}
+
+double ScanFull(const BenchConfig& config, LoadedDb* loaded) {
+  loaded->PrepareRound(config.cold, /*writes=*/false);
+  std::uint64_t entries = 0;
+  const double seconds = TimeThreads(1, [&](int) {
+    const Clock::time_point deadline = Clock::now() + config.min_round;
+    do {
+      entries += ScanOnce(loaded);
+    } while (Clock::now() < deadline);
+  });
   return static_cast<double>(entries) / seconds;
 }
 
 double SeekRandom(const BenchConfig& config, LoadedDb* loaded, int round) {
-  loaded->PrepareRound(config.cold);
+  loaded->PrepareRound(config.cold, /*writes=*/false);
   DBImpl* db = loaded->db();
-  const std::uint64_t scans = std::max<std::uint64_t>(config.reads_per_round() / kScanLength, 1);
-  const double seconds = TimeThreads(config.threads, [&](int thread) {
-    const Share share = ShareOf(scans, thread, config.threads);
-    KeyChooser chooser(KeyDistribution::kUniform, loaded->keys(), SeedFor(config, round, thread));
-    KeyBuffer key;
-    for (std::uint64_t scan = share.begin; scan < share.end; ++scan) {
-      auto it = db->NewIterator({});
-      std::uint64_t entries = 0;
-      for (it->Seek(FormatKey(chooser.Next(), &key)); it->Valid() && entries < kScanLength;
-           it->Next()) {
-        ++entries;
+  const Timed timed = RunForDuration(config.threads, config.min_round, [&](int thread) {
+    return [db, chooser = KeyChooser(KeyDistribution::kUniform, loaded->keys(),
+                                     SeedFor(config, round, thread))](std::uint64_t /*first*/,
+                                                                      std::uint64_t count) mutable {
+      KeyBuffer key;
+      for (std::uint64_t scan = 0; scan < count; ++scan) {
+        auto it = db->NewIterator({});
+        std::uint64_t entries = 0;
+        for (it->Seek(FormatKey(chooser.Next(), &key)); it->Valid() && entries < kScanLength;
+             it->Next()) {
+          ++entries;
+        }
+        if (!it->status().ok() || entries == 0) {
+          Fail("seekrandom", it->status().ok() ? Status::Corruption("empty scan") : it->status());
+        }
       }
-      if (!it->status().ok() || entries == 0) {
-        Fail("seekrandom", it->status().ok() ? Status::Corruption("empty scan") : it->status());
-      }
-    }
+    };
   });
-  return static_cast<double>(scans) / seconds;
+  return static_cast<double>(timed.operations) / timed.seconds;
 }
 
-double Mixed(const BenchConfig& config, LoadedDb* loaded, double read_fraction, int round) {
-  loaded->PrepareRound(config.cold);
-  const std::uint64_t total = config.reads_per_round();
-  const MixedOp op(loaded->db(), loaded->keys(), read_fraction, config.value_size,
-                   SeedFor(config, round, 0));
-  // Distinct rounds use distinct operation indexes, so they differ.
-  const std::uint64_t base = static_cast<std::uint64_t>(round) * total;
-  const double seconds = TimeThreads(config.threads, [&](int thread) {
-    const Share share = ShareOf(total, thread, config.threads);
-    for (std::uint64_t index = share.begin; index < share.end; ++index) {
-      op(base + index);
-    }
+// Fixed CPU work with no database code and no I/O: crc32c over a buffer that
+// fits in L2. A noisy figure here means the host, not the engine, is moving
+// the numbers.
+double CpuCalibration(const BenchConfig& config) {
+  const ValueSource source(kCalibrationBytes, config.seed);
+  const Slice buffer = source.At(0);
+  std::uint64_t bytes = 0;
+  std::uint32_t crc = 0;
+  const double seconds = TimeThreads(1, [&](int) {
+    const Clock::time_point deadline = Clock::now() + config.min_round;
+    do {
+      crc = crc32c::Extend(crc, buffer);
+      bytes += buffer.size();
+    } while (Clock::now() < deadline);
   });
-  return static_cast<double>(total) / seconds;
+  if (crc == 0 && bytes == 0) {
+    Fail("cpu", Status::Internal("no work done"));  // also keeps `crc` observable
+  }
+  return static_cast<double>(bytes) / seconds / kBytesPerMegabyte;
 }
 
 }  // namespace
 
+double MixedThroughput(const BenchConfig& config, LoadedDb* loaded, double read_fraction,
+                       int threads, int round) {
+  loaded->PrepareRound(config.cold, /*writes=*/read_fraction < 1.0);
+  const MixedOp op(loaded->db(), loaded->keys(), read_fraction, config.value_size,
+                   SeedFor(config, round, 0));
+  const Timed timed = RunForDuration(threads, config.min_round, [&](int thread) {
+    // Distinct threads and rounds use distinct operation indexes, so they differ.
+    const std::uint64_t base = (static_cast<std::uint64_t>(round) << kRoundIndexShift) +
+                               (static_cast<std::uint64_t>(thread) << kThreadIndexShift);
+    return [&op, base](std::uint64_t first, std::uint64_t count) {
+      for (std::uint64_t index = first; index < first + count; ++index) {
+        op(base + index);
+      }
+    };
+  });
+  return static_cast<double>(timed.operations) / timed.seconds;
+}
+
 const std::vector<std::string_view>& AllWorkloads() {
   static const std::vector<std::string_view> kAll = {
-      "fillseq",     "fillrandom", "fillsync",   "readrandom", "readzipf",
-      "readmissing", "scanfull",   "seekrandom", "ycsb-a",     "ycsb-b"};
+      "cpu",         "fillseq",  "fillrandom", "fillsync", "readrandom", "readzipf",
+      "readmissing", "scanfull", "seekrandom", "ycsb-a",   "ycsb-b"};
   return kAll;
 }
 
@@ -147,10 +192,13 @@ bool IsKnownWorkload(std::string_view name) {
 }
 
 bool NeedsLoadedDb(std::string_view name) {
-  return IsKnownWorkload(name) && !name.starts_with("fill");
+  return IsKnownWorkload(name) && name != "cpu" && !name.starts_with("fill");
 }
 
 std::string_view UnitOf(std::string_view name) {
+  if (name == "cpu") {
+    return "MB/s";
+  }
   if (name == "scanfull") {
     return "entries/s";
   }
@@ -159,16 +207,22 @@ std::string_view UnitOf(std::string_view name) {
 
 double RunWorkloadRound(std::string_view name, const BenchConfig& config, LoadedDb* loaded,
                         int round) {
+  using enum KeyDistribution;
+  if (name == "cpu") return CpuCalibration(config);
   if (name == "fillseq") return Fill(config, /*random_keys=*/false, /*sync=*/false, round);
   if (name == "fillrandom") return Fill(config, /*random_keys=*/true, /*sync=*/false, round);
   if (name == "fillsync") return Fill(config, /*random_keys=*/true, /*sync=*/true, round);
-  if (name == "readrandom") return Reads(config, loaded, KeyDistribution::kUniform, false, round);
-  if (name == "readzipf") return Reads(config, loaded, KeyDistribution::kZipfian, false, round);
-  if (name == "readmissing") return Reads(config, loaded, KeyDistribution::kUniform, true, round);
+  if (name == "readrandom") return Reads(config, loaded, kUniform, /*missing=*/false, round);
+  if (name == "readzipf") return Reads(config, loaded, kZipfian, /*missing=*/false, round);
+  if (name == "readmissing") return Reads(config, loaded, kUniform, /*missing=*/true, round);
   if (name == "scanfull") return ScanFull(config, loaded);
   if (name == "seekrandom") return SeekRandom(config, loaded, round);
-  if (name == "ycsb-a") return Mixed(config, loaded, kYcsbAReadFraction, round);
-  if (name == "ycsb-b") return Mixed(config, loaded, kYcsbBReadFraction, round);
+  if (name == "ycsb-a") {
+    return MixedThroughput(config, loaded, kYcsbAReadFraction, config.threads, round);
+  }
+  if (name == "ycsb-b") {
+    return MixedThroughput(config, loaded, kYcsbBReadFraction, config.threads, round);
+  }
   Fail("workload", Status::InvalidArgument(name));
 }
 
@@ -191,6 +245,27 @@ double TimeThreads(int threads, const std::function<void(int)>& body) {
     worker.join();
   }
   return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+Timed RunForDuration(int threads, std::chrono::nanoseconds min_round, const ChunkFactory& factory) {
+  const int count = std::max(threads, 1);
+  std::vector<ChunkFn> chunks;
+  for (int thread = 0; thread < count; ++thread) {
+    chunks.push_back(factory(thread));  // built before the clock starts
+  }
+  std::vector<std::uint64_t> done(static_cast<std::size_t>(count), 0);
+  const double seconds = TimeThreads(count, [&](int thread) {
+    const auto slot = static_cast<std::size_t>(thread);
+    const Clock::time_point deadline = Clock::now() + min_round;
+    std::uint64_t ops = 0;
+    do {
+      chunks[slot](ops, kChunkOps);
+      ops += kChunkOps;
+    } while (Clock::now() < deadline);
+    done[slot] = ops;
+  });
+  return {.operations = std::accumulate(done.begin(), done.end(), std::uint64_t{0}),
+          .seconds = seconds};
 }
 
 Share ShareOf(std::uint64_t total, int thread, int threads) noexcept {

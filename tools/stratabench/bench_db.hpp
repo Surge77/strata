@@ -56,28 +56,37 @@ void CloseOrFail(DBImpl* db);
 // which after a close is all of them.
 void EvictFromPageCache(const std::filesystem::path& path);
 
-// The shared database the read workloads use: `keys` keys, each written once
-// in random order, then reopened with its compactions waited out, so reads go
-// through a settled multi-level tree.
+// The shared database the loaded workloads use: `keys` keys, each written once
+// in random order, with compactions waited out, so reads go through a settled
+// multi-level tree. The loaded state is kept as a pristine copy under `path`;
+// workloads run against a work copy of it.
 class LoadedDb {
  public:
-  LoadedDb(std::filesystem::path path, std::uint64_t keys, std::size_t value_size,
+  LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::size_t value_size,
            std::uint64_t seed);
 
   [[nodiscard]] DBImpl* db() const noexcept { return db_.get(); }
   [[nodiscard]] std::uint64_t keys() const noexcept { return keys_; }
 
-  // Before a measured round: with `cold`, closes the database, evicts its
-  // files from the page cache, and reopens it (emptying the block cache too).
-  void PrepareRound(bool cold);
+  // Before each measured round. A round that `writes` -- or any round after
+  // one that did -- starts from a fresh copy of the pristine database, so
+  // every round of a writing workload is the same experiment rather than a
+  // later one on a bigger tree. With `cold`, the database is then closed, its
+  // files are evicted from the page cache, and it is reopened, which also
+  // empties the block cache.
+  void PrepareRound(bool cold, bool writes);
 
   // "5 49 2" -- tables per level, for the report.
   [[nodiscard]] std::string Shape() const;
 
  private:
-  std::filesystem::path path_;
+  void ResetWorkCopy();
+
+  std::filesystem::path pristine_;
+  std::filesystem::path work_;
   std::uint64_t keys_;
   std::unique_ptr<DBImpl> db_;
+  bool dirty_ = false;  // the work copy was written to since its last reset
 };
 
 }  // namespace strata::bench

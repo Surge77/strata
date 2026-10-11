@@ -42,7 +42,7 @@ void PrintUsage(std::FILE* out) {
                "Usage: stratabench --db=<scratch-dir> [options]\n\n"
                "  --workloads=a,b,...  default: every closed-loop workload; 'latency' runs\n"
                "                       the open-loop harness\n"
-               "  --num=N --value_size=N --threads=N --reads=N --seed=N\n"
+               "  --num=N --value_size=N --threads=N --min_round_s=F --seed=N\n"
                "  --warmup=N --rounds=N --cold\n"
                "  --read_fraction=F --workers=N --duration_s=F --rates=auto|r1,r2,...\n"
                "  --json=<path> --commit=<sha> --allow_any_fs --allow_unstable\n"
@@ -83,6 +83,17 @@ bool ParseNumber(std::string_view text, Number* out) {
   return error == std::errc{} && ptr == end;
 }
 
+// A positive number of seconds, e.g. "0.5".
+bool ParseSeconds(std::string_view text, std::chrono::nanoseconds* out) {
+  constexpr double kNanosPerSecond = 1e9;
+  double seconds = 0;
+  if (!ParseNumber(text, &seconds) || seconds <= 0) {
+    return false;
+  }
+  *out = std::chrono::nanoseconds(static_cast<std::int64_t>(seconds * kNanosPerSecond));
+  return true;
+}
+
 // Applies one --name=value flag; false if the flag or its value is invalid.
 bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   BenchConfig& c = args->config;
@@ -91,7 +102,7 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   if (name == "num") return ParseNumber(value, &c.num) && c.num > 0;
   if (name == "value_size") return ParseNumber(value, &c.value_size);
   if (name == "threads") return ParseNumber(value, &c.threads) && c.threads > 0;
-  if (name == "reads") return ParseNumber(value, &c.reads);
+  if (name == "min_round_s") return ParseSeconds(value, &c.min_round);
   if (name == "seed") return ParseNumber(value, &c.seed);
   if (name == "warmup") return ParseNumber(value, &c.protocol.warmup) && c.protocol.warmup >= 0;
   if (name == "rounds") return ParseNumber(value, &c.protocol.rounds) && c.protocol.rounds > 0;
@@ -104,12 +115,7 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
     return ParseNumber(value, &l.read_fraction) && l.read_fraction >= 0 && l.read_fraction <= 1;
   }
   if (name == "workers") return ParseNumber(value, &l.workers) && l.workers > 0;
-  if (name == "duration_s") {
-    double seconds = 0;
-    if (!ParseNumber(value, &seconds) || seconds <= 0) return false;
-    l.duration = std::chrono::nanoseconds(static_cast<std::int64_t>(seconds * 1e9));
-    return true;
-  }
+  if (name == "duration_s") return ParseSeconds(value, &l.duration);
   if (name == "rates") {
     l.rates.clear();
     if (value == "auto") return true;

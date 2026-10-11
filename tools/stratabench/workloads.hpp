@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -19,12 +20,12 @@ struct BenchConfig {
   std::uint64_t num = 1'000'000;  // keys
   std::size_t value_size = 100;
   int threads = 1;
-  std::uint64_t reads = 0;  // operations per read round; 0 means `num`
+  // Each round of a loaded-database workload runs for at least this long. A
+  // round of a fraction of a second is swung by any brief host interruption.
+  std::chrono::nanoseconds min_round = std::chrono::seconds(3);
   bool cold = false;
   Protocol protocol;
   std::uint64_t seed = 20261011;
-
-  [[nodiscard]] std::uint64_t reads_per_round() const noexcept { return reads == 0 ? num : reads; }
 };
 
 struct WorkloadResult {
@@ -50,6 +51,22 @@ struct WorkloadResult {
 // Runs `body(thread)` on `threads` threads released together; returns the
 // seconds from release until the last one finished.
 [[nodiscard]] double TimeThreads(int threads, const std::function<void(int)>& body);
+
+// A timed round: each thread calls its chunk function, chunk(first, count) for
+// its operations first .. first + count - 1, until `min_round` has passed.
+// The factory builds each thread's chunk function before the clock starts.
+struct Timed {
+  std::uint64_t operations;
+  double seconds;
+};
+using ChunkFn = std::function<void(std::uint64_t first, std::uint64_t count)>;
+using ChunkFactory = std::function<ChunkFn(int thread)>;
+[[nodiscard]] Timed RunForDuration(int threads, std::chrono::nanoseconds min_round,
+                                   const ChunkFactory& factory);
+
+// Closed-loop ops/s of a MixedOp mix over `threads` threads, for one round.
+[[nodiscard]] double MixedThroughput(const BenchConfig& config, LoadedDb* loaded,
+                                     double read_fraction, int threads, int round);
 
 // The [begin, end) slice of `total` operations that `thread` of `threads` does.
 struct Share {

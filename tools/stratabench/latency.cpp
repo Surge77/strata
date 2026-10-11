@@ -52,11 +52,11 @@ struct RowSamples {
 using OpFactory = std::function<std::function<void(std::uint64_t)>(int round)>;
 
 LatencyRow MeasureRate(const BenchConfig& config, const LatencyConfig& latency, LoadedDb* loaded,
-                       double rate, const OpFactory& make_op) {
+                       double rate, bool writes, const OpFactory& make_op) {
   RowSamples samples;
   const int total_rounds = config.protocol.warmup + config.protocol.rounds;
   for (int round = 0; round < total_rounds; ++round) {
-    loaded->PrepareRound(config.cold);
+    loaded->PrepareRound(config.cold, writes);
     std::fprintf(stderr, "  open loop %.0f op/s, round %d/%d\n", rate, round + 1, total_rounds);
     const OpenLoopConfig open{
         .rate = rate,
@@ -74,18 +74,7 @@ LatencyRow MeasureRate(const BenchConfig& config, const LatencyConfig& latency, 
 Summary ClosedLoopMax(const BenchConfig& config, const LatencyConfig& latency, LoadedDb* loaded) {
   int round = 0;
   const std::vector<double> values = RunRounds(config.protocol, [&] {
-    loaded->PrepareRound(config.cold);
-    const std::uint64_t total = config.reads_per_round();
-    const MixedOp op(loaded->db(), loaded->keys(), latency.read_fraction, config.value_size,
-                     config.seed + static_cast<std::uint64_t>(round));
-    const std::uint64_t base = static_cast<std::uint64_t>(round++) * total;
-    const double seconds = TimeThreads(latency.workers, [&](int worker) {
-      const Share share = ShareOf(total, worker, latency.workers);
-      for (std::uint64_t index = share.begin; index < share.end; ++index) {
-        op(base + index);
-      }
-    });
-    return static_cast<double>(total) / seconds;
+    return MixedThroughput(config, loaded, latency.read_fraction, latency.workers, round++);
   });
   return Summarize(values);
 }
@@ -109,6 +98,7 @@ LatencyReport RunLatency(const BenchConfig& config, const LatencyConfig& latency
   }
   // MixedOp sums zeta(keys) when built, so it is built once per round, before
   // the round's clock starts, and captured by the operation.
+  const bool writes = latency.read_fraction < 1.0;
   std::vector<std::unique_ptr<MixedOp>> ops;
   const OpFactory strata_op = [&](int round) -> std::function<void(std::uint64_t)> {
     ops.push_back(std::make_unique<MixedOp>(
@@ -118,14 +108,14 @@ LatencyReport RunLatency(const BenchConfig& config, const LatencyConfig& latency
     return [op](std::uint64_t index) { (*op)(index); };
   };
   for (const double rate : rates) {
-    report.rows.push_back(MeasureRate(config, latency, loaded, rate, strata_op));
+    report.rows.push_back(MeasureRate(config, latency, loaded, rate, writes, strata_op));
     ops.clear();
   }
 
   std::fprintf(stderr, "latency: harness floor (no-op)\n");
   const double highest = rates.empty() ? 0 : *std::max_element(rates.begin(), rates.end());
   const OpFactory no_op = [](int) { return [](std::uint64_t) {}; };
-  report.harness_floor = MeasureRate(config, latency, loaded, highest, no_op);
+  report.harness_floor = MeasureRate(config, latency, loaded, highest, /*writes=*/false, no_op);
   return report;
 }
 

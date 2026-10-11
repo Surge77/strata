@@ -89,14 +89,16 @@ void EvictFromPageCache(const std::filesystem::path& path) {
     if (fd < 0) {
       continue;  // removed by a compaction since the listing; nothing to evict
     }
+    // DONTNEED drops clean pages only; a freshly copied file's are dirty.
+    static_cast<void>(::fdatasync(fd));
     static_cast<void>(::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
     ::close(fd);
   }
 }
 
-LoadedDb::LoadedDb(std::filesystem::path path, std::uint64_t keys, std::size_t value_size,
+LoadedDb::LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::size_t value_size,
                    std::uint64_t seed)
-    : path_(std::move(path)), keys_(keys) {
+    : pristine_(path / "pristine"), work_(path / "work"), keys_(keys) {
   std::vector<std::uint64_t> order(keys);
   std::iota(order.begin(), order.end(), std::uint64_t{0});
   Random random(seed);
@@ -104,7 +106,9 @@ LoadedDb::LoadedDb(std::filesystem::path path, std::uint64_t keys, std::size_t v
     std::swap(order[index - 1], order[random.Uniform(index)]);
   }
   {
-    auto db = OpenFresh(path_);
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);  // Open creates only the leaf
+    auto db = OpenFresh(pristine_);
     ValueSource values(value_size, seed);
     KeyBuffer key;
     for (const std::uint64_t number : order) {
@@ -117,18 +121,32 @@ LoadedDb::LoadedDb(std::filesystem::path path, std::uint64_t keys, std::size_t v
     db->WaitForCompactionsForTest();
     CloseOrFail(db.get());
   }
-  db_ = OpenExisting(path_);
+  ResetWorkCopy();
+}
+
+void LoadedDb::ResetWorkCopy() {
+  if (db_ != nullptr) {
+    CloseOrFail(db_.get());
+    db_.reset();
+  }
+  std::filesystem::remove_all(work_);
+  std::filesystem::copy(pristine_, work_, std::filesystem::copy_options::recursive);
+  db_ = OpenExisting(work_);
   db_->WaitForCompactionsForTest();
 }
 
-void LoadedDb::PrepareRound(bool cold) {
+void LoadedDb::PrepareRound(bool cold, bool writes) {
+  if (writes || dirty_) {
+    ResetWorkCopy();
+    dirty_ = writes;
+  }
   if (!cold) {
     return;
   }
   CloseOrFail(db_.get());
   db_.reset();
-  EvictFromPageCache(path_);
-  db_ = OpenExisting(path_);
+  EvictFromPageCache(work_);
+  db_ = OpenExisting(work_);
   db_->WaitForCompactionsForTest();
 }
 

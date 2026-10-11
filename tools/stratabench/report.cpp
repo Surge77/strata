@@ -1,5 +1,6 @@
 #include "stratabench/report.hpp"
 
+#include <chrono>
 #include <format>
 #include <fstream>
 
@@ -103,9 +104,9 @@ void PrintReport(const Report& report, std::FILE* out) {
                static_cast<unsigned long long>(env.memory_mib), env.kernel.c_str());
   std::fprintf(out, "build       %s %s, sanitizer %s    scratch fs %s\n", env.compiler.c_str(),
                env.build_type.c_str(), env.sanitizer.c_str(), env.filesystem.c_str());
-  std::fprintf(out, "config      num=%llu value=%zuB threads=%d reads=%llu cache=%s\n",
+  std::fprintf(out, "config      num=%llu value=%zuB threads=%d min_round=%.1fs cache=%s\n",
                static_cast<unsigned long long>(config.num), config.value_size, config.threads,
-               static_cast<unsigned long long>(config.reads_per_round()),
+               std::chrono::duration<double>(config.min_round).count(),
                config.cold ? "cold" : "warm");
   std::fprintf(out, "protocol    warmup=%d rounds=%d, median and CV, stable at CV <= %.0f%%%s\n",
                config.protocol.warmup, config.protocol.rounds, kPercent * kMaxStableCv,
@@ -151,9 +152,10 @@ bool WriteJson(const Report& report, const std::filesystem::path& path) {
                      JsonString(env.build_type), JsonString(env.sanitizer),
                      JsonString(env.filesystem))
       << "\n  \"config\": "
-      << std::format(R"({{"num": {}, "value_size": {}, "threads": {}, "reads": {}, "cold": {}, )",
-                     config.num, config.value_size, config.threads, config.reads_per_round(),
-                     config.cold)
+      << std::format(
+             R"({{"num": {}, "value_size": {}, "threads": {}, "min_round_s": {}, "cold": {}, )",
+             config.num, config.value_size, config.threads,
+             std::chrono::duration<double>(config.min_round).count(), config.cold)
       << std::format(R"("warmup": {}, "rounds": {}, "seed": {}, "max_stable_cv": {}}},)",
                      config.protocol.warmup, config.protocol.rounds, config.seed, kMaxStableCv)
       << std::format("\n  \"publishable\": {},\n  \"all_gated_stable\": {},", Publishable(report),

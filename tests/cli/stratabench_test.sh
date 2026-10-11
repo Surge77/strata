@@ -12,8 +12,8 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-"$STRATABENCH" --db="$SCRATCH/db" --num=2000 --reads=2000 --rounds=1 --warmup=0 \
-    --workloads=fillseq,fillrandom,fillsync,readrandom,readzipf,readmissing,scanfull,seekrandom,ycsb-a,ycsb-b,latency \
+"$STRATABENCH" --db="$SCRATCH/db" --num=2000 --min_round_s=0.05 --rounds=1 --warmup=0 \
+    --workloads=cpu,fillseq,fillrandom,fillsync,readrandom,readzipf,readmissing,scanfull,seekrandom,ycsb-a,ycsb-b,latency \
     --rates=2000 --duration_s=0.1 --json="$SCRATCH/report.json" --allow_unstable \
     > "$SCRATCH/stdout.txt" 2> "$SCRATCH/stderr.txt" || fail "run exited $?: $(cat "$SCRATCH/stderr.txt")"
 
@@ -24,7 +24,7 @@ python3 - "$SCRATCH/report.json" <<'PY' || fail "report.json is wrong"
 import json, sys
 report = json.load(open(sys.argv[1]))
 assert report["publishable"] is False
-assert len(report["workloads"]) == 10, len(report["workloads"])
+assert len(report["workloads"]) == 11, len(report["workloads"])
 assert all(w["summary"]["rounds"] == 1 and w["summary"]["median"] > 0 for w in report["workloads"])
 assert report["latency"]["rows"][0]["offered_rate"] == 2000
 assert report["env"]["filesystem"] != "9p"
