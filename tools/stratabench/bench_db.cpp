@@ -96,6 +96,18 @@ void EvictFromPageCache(const std::filesystem::path& path) {
   }
 }
 
+void WriteBackFilesystem(const std::filesystem::path& path) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    Fail("write back", Status::IoError(path.string()));
+  }
+  const int result = ::syncfs(fd);
+  ::close(fd);
+  if (result != 0) {
+    Fail("write back", Status::IoError(path.string()));
+  }
+}
+
 LoadedDb::LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::size_t value_size,
                    std::uint64_t seed)
     : pristine_(path / "pristine"), work_(path / "work"), keys_(keys) {
@@ -131,6 +143,10 @@ void LoadedDb::ResetWorkCopy() {
   }
   std::filesystem::remove_all(work_);
   std::filesystem::copy(pristine_, work_, std::filesystem::copy_options::recursive);
+  // The copy (and, the first time, the load) leaves ~100 MB of dirty pages.
+  // Left alone, they would be written back during the timed round -- and on
+  // ext4 (data=ordered) the round's first fsync would wait for all of them.
+  WriteBackFilesystem(work_);
   db_ = OpenExisting(work_);
   db_->WaitForCompactionsForTest();
 }

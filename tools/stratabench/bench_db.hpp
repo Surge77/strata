@@ -56,6 +56,10 @@ void CloseOrFail(DBImpl* db);
 // which after a close is all of them.
 void EvictFromPageCache(const std::filesystem::path& path);
 
+// Writes back every dirty page of the filesystem holding `path` (syncfs), so
+// setup work leaves no I/O to be paid for inside a timed round.
+void WriteBackFilesystem(const std::filesystem::path& path);
+
 // The shared database the loaded workloads use: `keys` keys, each written once
 // in random order, with compactions waited out, so reads go through a settled
 // multi-level tree. The loaded state is kept as a pristine copy under `path`;
