@@ -4,6 +4,7 @@
 // 3 a gated figure was unstable (CV above 5%) and --allow_unstable was not set.
 
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -24,6 +25,8 @@ constexpr int kExitError = 1;
 constexpr int kExitUsage = 2;
 constexpr int kExitUnstable = 3;
 constexpr std::string_view kLatency = "latency";
+// 10M ops/s: above any rate this engine reaches here; a 5 s schedule at it is 400 MB.
+constexpr double kMaxRate = 1e7;
 
 struct Args {
   BenchConfig config;
@@ -57,13 +60,20 @@ void PrintUsage(std::FILE* out) {
 // Under `perf record -D -1 --control fifo:ctl,ack`, sampling starts disabled
 // and is switched on only around each measured workload, so a profile of a
 // read workload does not mostly show the load that built its database.
+// Both FIFOs stay open for the whole run, as in perf's own example: closing
+// the control FIFO between commands can end perf's reading of it.
 void PerfControl(const Args& args, const char* command) {
   if (args.perf_ctl.empty() || args.perf_ack.empty()) {
     return;
   }
-  std::ofstream(args.perf_ctl) << command << '\n' << std::flush;
+  static std::ofstream control(args.perf_ctl);
+  static std::ifstream acks(args.perf_ack);
+  control << command << '\n' << std::flush;
   std::string ack;
-  std::getline(std::ifstream(args.perf_ack), ack);
+  if (!std::getline(acks, ack)) {
+    std::fprintf(stderr, "stratabench: perf did not acknowledge '%s'\n", command);
+    std::exit(kExitError);
+  }
 }
 
 std::vector<std::string> SplitList(std::string_view list) {
@@ -83,11 +93,18 @@ bool ParseNumber(std::string_view text, Number* out) {
   return error == std::errc{} && ptr == end;
 }
 
+// A finite number in (0, max]: from_chars accepts "nan" and "inf", which
+// would otherwise reach a float-to-integer conversion (undefined behaviour).
+bool ParsePositive(std::string_view text, double max, double* out) {
+  return ParseNumber(text, out) && std::isfinite(*out) && *out > 0 && *out <= max;
+}
+
 // A positive number of seconds, e.g. "0.5".
 bool ParseSeconds(std::string_view text, std::chrono::nanoseconds* out) {
   constexpr double kNanosPerSecond = 1e9;
+  constexpr double kMaxSeconds = 1e5;
   double seconds = 0;
-  if (!ParseNumber(text, &seconds) || seconds <= 0) {
+  if (!ParsePositive(text, kMaxSeconds, &seconds)) {
     return false;
   }
   *out = std::chrono::nanoseconds(static_cast<std::int64_t>(seconds * kNanosPerSecond));
@@ -121,7 +138,7 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
     if (value == "auto") return true;
     for (const std::string& item : SplitList(value)) {
       double rate = 0;
-      if (!ParseNumber(std::string_view(item), &rate) || rate <= 0) return false;
+      if (!ParsePositive(item, kMaxRate, &rate)) return false;
       l.rates.push_back(rate);
     }
     return !l.rates.empty();
@@ -178,11 +195,11 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(args.config.scratch);
 
   Report report{.env = CaptureEnv(args.config.scratch, args.commit), .config = args.config};
-  if (report.env.on_9p() && !args.allow_any_fs) {
+  if (report.env.unsuitable_filesystem() && !args.allow_any_fs) {
     std::fprintf(stderr,
-                 "stratabench: %s is on a 9P mount (WSL /mnt/c?), whose fsync and caching make "
-                 "the numbers meaningless; use an ext4 path or pass --allow_any_fs\n",
-                 args.config.scratch.c_str());
+                 "stratabench: %s is on %s, whose fsync and caching make the numbers "
+                 "meaningless; use an ext4 path or pass --allow_any_fs\n",
+                 args.config.scratch.c_str(), report.env.filesystem.c_str());
     return kExitUsage;
   }
 
@@ -221,10 +238,16 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "stratabench: cannot write %s\n", args.json_path.c_str());
     return kExitError;
   }
-  if (!AllGatedStable(report)) {
+  // A one-round run has no measurable spread, so it would pass the CV check;
+  // it is no more publishable for that.
+  const bool stable = AllGatedStable(report);
+  const bool publishable = Publishable(report);
+  if (!stable) {
     std::fprintf(stderr, "stratabench: a gated figure is UNSTABLE (CV above %.0f%%)\n",
                  100 * kMaxStableCv);
-    return args.allow_unstable ? kExitOk : kExitUnstable;
   }
-  return kExitOk;
+  if (!publishable) {
+    std::fprintf(stderr, "stratabench: this run is NOT PUBLISHABLE (rounds, build, or fs)\n");
+  }
+  return stable && publishable ? kExitOk : (args.allow_unstable ? kExitOk : kExitUnstable);
 }

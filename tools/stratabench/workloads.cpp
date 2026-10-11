@@ -5,9 +5,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <latch>
-#include <numeric>
-#include <thread>
 
 #include "util/crc32c.hpp"
 
@@ -21,14 +18,14 @@ constexpr std::uint64_t kMinSyncWrites = 100;
 constexpr std::uint64_t kScanLength = 100;  // entries read after each seek
 constexpr double kYcsbAReadFraction = 0.5;
 constexpr double kYcsbBReadFraction = 0.95;
-// A timed round checks its deadline once per chunk, not once per operation.
-constexpr std::uint64_t kChunkOps = 256;
 constexpr std::size_t kCalibrationBytes = 256 * 1024;
 constexpr double kBytesPerMegabyte = 1e6;
 // Spreads per-round, per-thread seeds far apart.
 constexpr std::uint64_t kRoundSeedStride = 1'000'003;
 constexpr std::uint64_t kThreadSeedStride = 7'919;
 constexpr std::uint64_t kGoldenGamma = 0x9E3779B97F4A7C15ULL;
+// Keeps operation 0 from replaying the draws of a schedule seeded the same.
+constexpr std::uint64_t kMixedOpSalt = 0xA5A5A5A55A5A5A5AULL;
 // MixedOp indexes: each thread of each round gets its own 2^40-wide range.
 constexpr unsigned kThreadIndexShift = 40;
 constexpr unsigned kRoundIndexShift = 48;
@@ -50,10 +47,17 @@ double Fill(const BenchConfig& config, bool random_keys, bool sync, int round) {
   const std::uint64_t total =
       sync ? std::max(config.num / kSyncDivisor, kMinSyncWrites) : config.num;
   auto db = OpenFresh(config.scratch / "fill");
+  // The previous round's files were deleted but may still be written back;
+  // that must not land inside this round's fsyncs.
+  WriteBackFilesystem(config.scratch);
   const ValueSource values(config.value_size, config.seed);
+  std::vector<KeyChooser> choosers;
+  for (int thread = 0; thread < std::max(config.threads, 1); ++thread) {
+    choosers.emplace_back(KeyDistribution::kUniform, config.num, SeedFor(config, round, thread));
+  }
   const double seconds = TimeThreads(config.threads, [&](int thread) {
     const Share share = ShareOf(total, thread, config.threads);
-    KeyChooser chooser(KeyDistribution::kUniform, config.num, SeedFor(config, round, thread));
+    KeyChooser& chooser = choosers[static_cast<std::size_t>(thread)];
     KeyBuffer key;
     for (std::uint64_t index = share.begin; index < share.end; ++index) {
       const std::uint64_t number = random_keys ? chooser.Next() : index;
@@ -226,54 +230,6 @@ double RunWorkloadRound(std::string_view name, const BenchConfig& config, Loaded
   Fail("workload", Status::InvalidArgument(name));
 }
 
-double TimeThreads(int threads, const std::function<void(int)>& body) {
-  const int count = std::max(threads, 1);
-  std::latch ready(count);
-  std::latch go(1);
-  std::vector<std::thread> workers;
-  for (int thread = 0; thread < count; ++thread) {
-    workers.emplace_back([&, thread] {
-      ready.count_down();
-      go.wait();
-      body(thread);
-    });
-  }
-  ready.wait();
-  const Clock::time_point start = Clock::now();
-  go.count_down();
-  for (auto& worker : workers) {
-    worker.join();
-  }
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
-
-Timed RunForDuration(int threads, std::chrono::nanoseconds min_round, const ChunkFactory& factory) {
-  const int count = std::max(threads, 1);
-  std::vector<ChunkFn> chunks;
-  for (int thread = 0; thread < count; ++thread) {
-    chunks.push_back(factory(thread));  // built before the clock starts
-  }
-  std::vector<std::uint64_t> done(static_cast<std::size_t>(count), 0);
-  const double seconds = TimeThreads(count, [&](int thread) {
-    const auto slot = static_cast<std::size_t>(thread);
-    const Clock::time_point deadline = Clock::now() + min_round;
-    std::uint64_t ops = 0;
-    do {
-      chunks[slot](ops, kChunkOps);
-      ops += kChunkOps;
-    } while (Clock::now() < deadline);
-    done[slot] = ops;
-  });
-  return {.operations = std::accumulate(done.begin(), done.end(), std::uint64_t{0}),
-          .seconds = seconds};
-}
-
-Share ShareOf(std::uint64_t total, int thread, int threads) noexcept {
-  const auto count = static_cast<std::uint64_t>(std::max(threads, 1));
-  const auto index = static_cast<std::uint64_t>(thread);
-  return {.begin = total * index / count, .end = total * (index + 1) / count};
-}
-
 MixedOp::MixedOp(DBImpl* db, std::uint64_t keys, double read_fraction, std::size_t value_size,
                  std::uint64_t seed)
     : db_(db),
@@ -284,7 +240,7 @@ MixedOp::MixedOp(DBImpl* db, std::uint64_t keys, double read_fraction, std::size
       values_(value_size, seed) {}
 
 void MixedOp::operator()(std::uint64_t index) const {
-  Random random(seed_ ^ (index * kGoldenGamma));
+  Random random((seed_ ^ kMixedOpSalt) ^ (index * kGoldenGamma));
   const bool is_read = UniformDouble(&random) < read_fraction_;
   const std::uint64_t number =
       keys_ <= 1 ? 0 : ZipfianGenerator::Scramble(zipf_.RankFor(UniformDouble(&random)), keys_);

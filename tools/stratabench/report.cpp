@@ -91,7 +91,7 @@ bool AllGatedStable(const Report& report) {
 
 bool Publishable(const Report& report) {
   return report.config.protocol.publishable() && report.env.publishable_build() &&
-         !report.env.on_9p();
+         !report.env.unsuitable_filesystem();
 }
 
 void PrintReport(const Report& report, std::FILE* out) {

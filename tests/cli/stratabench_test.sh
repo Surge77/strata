@@ -36,7 +36,13 @@ set +e
 code=$?
 "$STRATABENCH" --workloads=fillseq 2>/dev/null
 code_missing_db=$?
+"$STRATABENCH" --db="$SCRATCH/db" --min_round_s=nan 2>/dev/null
+code_nan=$?
+"$STRATABENCH" --db="$SCRATCH/db" --workloads=fillseq --num=100 --rounds=1 --warmup=0 >/dev/null 2>&1
+code_one_round=$?
 set -e
 [[ $code -eq 2 ]] || fail "unknown workload should exit 2, got $code"
 [[ $code_missing_db -eq 2 ]] || fail "missing --db should exit 2, got $code_missing_db"
+[[ $code_nan -eq 2 ]] || fail "--min_round_s=nan should exit 2, got $code_nan"
+[[ $code_one_round -eq 3 ]] || fail "an unpublishable run should exit 3, got $code_one_round"
 echo "stratabench smoke test passed"

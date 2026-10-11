@@ -18,6 +18,9 @@ double Zeta(std::uint64_t items, double theta) {
 // drawn from (Next returns 0), so any valid size works for it.
 constexpr std::uint64_t kMinZipfItems = 2;
 
+// Decorrelates a chooser's Zipf draws from its uniform ones under one seed.
+constexpr std::uint64_t kZipfSeedSalt = 0x5DEECE66DULL;
+
 }  // namespace
 
 ZipfianGenerator::ZipfianGenerator(std::uint64_t items, double theta, std::uint64_t seed)
@@ -31,6 +34,10 @@ ZipfianGenerator::ZipfianGenerator(std::uint64_t items, double theta, std::uint6
 
 std::uint64_t ZipfianGenerator::RankFor(double u) const noexcept {
   const double uz = u * zeta_items_;
+  if (items_ == kMinZipfItems) {
+    // eta_ is 0/0 for two items; ranks 0 and 1 are the whole distribution.
+    return uz < 1.0 ? 0 : 1;
+  }
   if (uz < 1.0) {
     return 0;
   }
@@ -46,19 +53,20 @@ std::uint64_t ZipfianGenerator::Scramble(std::uint64_t rank, std::uint64_t items
 }
 
 KeyChooser::KeyChooser(KeyDistribution distribution, std::uint64_t items, std::uint64_t seed)
-    : distribution_(distribution),
-      items_(items),
-      random_(seed),
-      zipf_(items, ZipfianGenerator::kDefaultTheta, seed ^ 0x5DEECE66DULL) {}
+    : items_(items), random_(seed) {
+  if (distribution == KeyDistribution::kZipfian) {
+    zipf_.emplace(items, ZipfianGenerator::kDefaultTheta, seed ^ kZipfSeedSalt);
+  }
+}
 
 std::uint64_t KeyChooser::Next() noexcept {
   if (items_ <= 1) {
     return 0;
   }
-  if (distribution_ == KeyDistribution::kUniform) {
+  if (!zipf_) {
     return random_.Uniform(items_);
   }
-  return ZipfianGenerator::Scramble(zipf_.NextRank(), items_);
+  return ZipfianGenerator::Scramble(zipf_->NextRank(), items_);
 }
 
 }  // namespace strata::bench

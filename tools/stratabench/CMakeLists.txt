@@ -6,6 +6,7 @@ add_library(stratabench_lib STATIC
     open_loop.cpp
     bench_db.cpp
     workloads.cpp
+    timing.cpp
     latency.cpp
     env_info.cpp
     report.cpp)

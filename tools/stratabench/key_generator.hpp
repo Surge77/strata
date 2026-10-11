@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "util/random.hpp"
 
@@ -53,7 +54,8 @@ enum class KeyDistribution { kUniform, kZipfian };
 
 // Chooses key indexes in [0, items) under the given distribution. Zipfian
 // choices are scrambled (see ZipfianGenerator::Scramble). Not thread-safe:
-// give each thread its own, seeded differently.
+// give each thread its own, seeded differently. Building a Zipfian chooser
+// costs O(items); build it before any clock starts.
 class KeyChooser {
  public:
   KeyChooser(KeyDistribution distribution, std::uint64_t items, std::uint64_t seed);
@@ -61,10 +63,9 @@ class KeyChooser {
   [[nodiscard]] std::uint64_t Next() noexcept;
 
  private:
-  KeyDistribution distribution_;
   std::uint64_t items_;
   Random random_;
-  ZipfianGenerator zipf_;
+  std::optional<ZipfianGenerator> zipf_;  // only for KeyDistribution::kZipfian
 };
 
 }  // namespace strata::bench

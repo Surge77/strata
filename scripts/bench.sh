@@ -52,10 +52,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 STRATABENCH="$BUILD_DIR/tools/stratabench/stratabench"
-if [[ ! -x "$STRATABENCH" ]]; then
-  echo "bench.sh: no stratabench at $STRATABENCH -- run scripts/build.sh first" >&2
+if [[ ! -d "$BUILD_DIR" ]]; then
+  echo "bench.sh: no build at $BUILD_DIR -- run scripts/build.sh first" >&2
   exit 1
 fi
+# Bring the binary up to date with the tree, so the commit recorded below is
+# the code that runs (a no-op when nothing changed).
+cmake --build "$BUILD_DIR" --target stratabench > /dev/null
 
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)"
 if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
@@ -90,13 +93,15 @@ if [[ "$MODE" == profile ]]; then
       "$STRATABENCH" "${ARGS[@]}" --perf_ctl="$CTL" --perf_ack="$ACK" \
       2> "$OUT/stderr.txt" | tee "$OUT/stdout.txt" || status=$?
   rm -f "$CTL" "$ACK"
+  # Reporting is best effort: a missing or empty profile must not replace the
+  # run's own exit status with perf's or grep's.
   "$PERF" report -i "$OUT/perf.data" --stdio --no-children -g none --sort symbol \
-      --percent-limit "$PERF_PERCENT_LIMIT" > "$OUT/perf-flat.txt" 2>/dev/null
+      --percent-limit "$PERF_PERCENT_LIMIT" > "$OUT/perf-flat.txt" 2>/dev/null || true
   "$PERF" report -i "$OUT/perf.data" --stdio --no-children --sort symbol \
-      --percent-limit 2 > "$OUT/perf-callgraph.txt" 2>/dev/null
+      --percent-limit 2 > "$OUT/perf-callgraph.txt" 2>/dev/null || true
   echo "==> flat profile (top symbols):"
-  grep -v '^#' "$OUT/perf-flat.txt" | grep -v '^$' \
-      | sed -E 's/[[:space:]]+-[[:space:]]+-[[:space:]]*$//' | head -25
+  { grep -v '^#' "$OUT/perf-flat.txt" | grep -v '^$' \
+      | sed -E 's/[[:space:]]+-[[:space:]]+-[[:space:]]*$//' | head -25; } || true
 else
   "${LAUNCH[@]}" "$STRATABENCH" "${ARGS[@]}" 2> "$OUT/stderr.txt" \
       | tee "$OUT/stdout.txt" || status=$?

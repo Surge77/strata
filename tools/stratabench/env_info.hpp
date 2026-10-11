@@ -24,9 +24,12 @@ struct EnvInfo {
   // An optimised, uninstrumented build: the only kind whose numbers mean
   // anything about the engine.
   [[nodiscard]] bool publishable_build() const;
-  // The scratch directory is on a 9P mount (WSL's /mnt/c), whose fsync and
-  // caching make durability and timing meaningless.
-  [[nodiscard]] bool on_9p() const { return filesystem == "9p"; }
+  // The scratch directory's filesystem makes the numbers meaningless: 9P
+  // (WSL's /mnt/c) for its fsync and caching, tmpfs because fsync there is a
+  // no-op, overlay because what it measures depends on the layer beneath.
+  [[nodiscard]] bool unsuitable_filesystem() const {
+    return filesystem == "9p" || filesystem == "tmpfs" || filesystem == "overlay";
+  }
 };
 
 [[nodiscard]] EnvInfo CaptureEnv(const std::filesystem::path& scratch, std::string commit);

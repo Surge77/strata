@@ -91,8 +91,11 @@ void EvictFromPageCache(const std::filesystem::path& path) {
     }
     // DONTNEED drops clean pages only; a freshly copied file's are dirty.
     static_cast<void>(::fdatasync(fd));
-    static_cast<void>(::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+    const int advised = ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
     ::close(fd);
+    if (advised != 0) {  // a "cold" round that is not cold must not be reported
+      Fail("evict from page cache", Status::IoError(entry.path().string()));
+    }
   }
 }
 
