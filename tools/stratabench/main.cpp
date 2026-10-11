@@ -5,6 +5,7 @@
 
 #include <charconv>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +31,8 @@ struct Args {
   std::vector<std::string> workloads;
   std::string json_path;
   std::string commit;
+  std::string perf_ctl;  // perf record --control fifo:<perf_ctl>,<perf_ack>
+  std::string perf_ack;
   bool allow_any_fs = false;
   bool allow_unstable = false;
 };
@@ -42,12 +45,25 @@ void PrintUsage(std::FILE* out) {
                "  --num=N --value_size=N --threads=N --reads=N --seed=N\n"
                "  --warmup=N --rounds=N --cold\n"
                "  --read_fraction=F --workers=N --duration_s=F --rates=auto|r1,r2,...\n"
-               "  --json=<path> --commit=<sha> --allow_any_fs --allow_unstable\n\n"
+               "  --json=<path> --commit=<sha> --allow_any_fs --allow_unstable\n"
+               "  --perf_ctl=<fifo> --perf_ack=<fifo>  (set by scripts/bench.sh --profile)\n\n"
                "Workloads:");
   for (const auto name : AllWorkloads()) {
     std::fprintf(out, " %.*s", static_cast<int>(name.size()), name.data());
   }
   std::fprintf(out, " latency\n");
+}
+
+// Under `perf record -D -1 --control fifo:ctl,ack`, sampling starts disabled
+// and is switched on only around each measured workload, so a profile of a
+// read workload does not mostly show the load that built its database.
+void PerfControl(const Args& args, const char* command) {
+  if (args.perf_ctl.empty() || args.perf_ack.empty()) {
+    return;
+  }
+  std::ofstream(args.perf_ctl) << command << '\n' << std::flush;
+  std::string ack;
+  std::getline(std::ifstream(args.perf_ack), ack);
 }
 
 std::vector<std::string> SplitList(std::string_view list) {
@@ -81,6 +97,8 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   if (name == "rounds") return ParseNumber(value, &c.protocol.rounds) && c.protocol.rounds > 0;
   if (name == "json") return !(args->json_path = value).empty();
   if (name == "commit") return !(args->commit = value).empty();
+  if (name == "perf_ctl") return !(args->perf_ctl = value).empty();
+  if (name == "perf_ack") return !(args->perf_ack = value).empty();
   LatencyConfig& l = args->latency;
   if (name == "read_fraction") {
     return ParseNumber(value, &l.read_fraction) && l.read_fraction >= 0 && l.read_fraction <= 1;
@@ -170,8 +188,10 @@ int main(int argc, char** argv) {
                                           args.config.value_size, args.config.seed);
       report.db_shape = loaded->Shape();
     }
+    PerfControl(args, "enable");
     if (name == kLatency) {
       report.latency = RunLatency(args.config, args.latency, loaded.get());
+      PerfControl(args, "disable");
       continue;
     }
     int round = 0;
@@ -180,6 +200,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "%s round %d/%d\n", name.c_str(), round + 1, total);
       return RunWorkloadRound(name, args.config, loaded.get(), round++);
     });
+    PerfControl(args, "disable");
     report.workloads.push_back({.name = name,
                                 .unit = std::string(UnitOf(name)),
                                 .values = values,
