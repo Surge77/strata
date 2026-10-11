@@ -31,7 +31,7 @@ strata_add_test(write_batch_test SUITE unit SOURCES write_batch_test.cpp)
 
 # The benchmark harness's own logic: statistics, key generators, open loop.
 if(TARGET stratabench_lib)
-  foreach(bench_test bench_stats_test key_generator_test)
+  foreach(bench_test bench_stats_test key_generator_test open_loop_test)
     strata_add_test(${bench_test} SUITE unit SOURCES ${bench_test}.cpp)
     target_link_libraries(${bench_test} PRIVATE stratabench_lib)
   endforeach()

@@ -2,7 +2,8 @@
 # open-loop harness are unit tested like the engine (tests/unit/).
 add_library(stratabench_lib STATIC
     stats.cpp
-    key_generator.cpp)
+    key_generator.cpp
+    open_loop.cpp)
 # Workloads use engine internals (Histogram, Random, DBImpl's compaction wait).
 target_include_directories(stratabench_lib PUBLIC ${PROJECT_SOURCE_DIR}/tools
                                                   ${PROJECT_SOURCE_DIR}/src)
