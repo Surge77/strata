@@ -24,7 +24,11 @@ class ZipfianGenerator {
   // Preconditions: 1 <= items < kScramblePrime, 0 < theta < 1.
   ZipfianGenerator(std::uint64_t items, double theta, std::uint64_t seed);
 
-  [[nodiscard]] std::uint64_t NextRank() noexcept;
+  [[nodiscard]] std::uint64_t NextRank() noexcept { return RankFor(UniformDouble(&random_)); }
+
+  // The rank for a uniform draw `u` in [0, 1). Const, so one generator can
+  // serve many threads that bring their own draws.
+  [[nodiscard]] std::uint64_t RankFor(double u) const noexcept;
 
   // Maps a rank onto the key space by a fixed permutation, so the popular
   // ranks become keys spread across the whole range rather than the first few

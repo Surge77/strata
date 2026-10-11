@@ -29,8 +29,7 @@ ZipfianGenerator::ZipfianGenerator(std::uint64_t items, double theta, std::uint6
       half_pow_theta_(std::pow(0.5, theta)),
       random_(seed) {}
 
-std::uint64_t ZipfianGenerator::NextRank() noexcept {
-  const double u = UniformDouble(&random_);
+std::uint64_t ZipfianGenerator::RankFor(double u) const noexcept {
   const double uz = u * zeta_items_;
   if (uz < 1.0) {
     return 0;

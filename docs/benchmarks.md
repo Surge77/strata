@@ -74,7 +74,7 @@ number of keys.
 |---|---|---|---|
 | `fillseq` | fresh each round | `--num` unsynced Puts in key order | ops/s |
 | `fillrandom` | fresh each round | `--num` unsynced Puts, uniformly random keys | ops/s |
-| `fillsync` | fresh each round | `--num` / 100 synced Puts, random keys | ops/s |
+| `fillsync` | fresh each round | `--num` / 1000 synced Puts (at least 100), random keys | ops/s |
 | `readrandom` | shared, loaded | Gets of uniformly random existing keys | ops/s |
 | `readzipf` | shared, loaded | Gets of existing keys, Zipfian (θ = 0.99) | ops/s |
 | `readmissing` | shared, loaded | Gets of keys that do not exist | ops/s |
