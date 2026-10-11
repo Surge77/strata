@@ -72,36 +72,53 @@ number of keys.
 
 | Workload | Database | Operation | Figure |
 |---|---|---|---|
+| `cpu` | none | crc32c over a 256 KiB buffer (host-noise probe, below) | MB/s |
 | `fillseq` | fresh each round | `--num` unsynced Puts in key order | ops/s |
 | `fillrandom` | fresh each round | `--num` unsynced Puts, uniformly random keys | ops/s |
 | `fillsync` | fresh each round | `--num` / 1000 synced Puts (at least 100), random keys | ops/s |
-| `readrandom` | shared, loaded | Gets of uniformly random existing keys | ops/s |
-| `readzipf` | shared, loaded | Gets of existing keys, Zipfian (θ = 0.99) | ops/s |
-| `readmissing` | shared, loaded | Gets of keys that do not exist | ops/s |
-| `scanfull` | shared, loaded | one forward scan of the whole database | entries/s |
-| `seekrandom` | shared, loaded | Seek to a random key, then read 100 entries | scans/s |
-| `ycsb-a` | shared, loaded | 50% Get / 50% Put, Zipfian keys | ops/s |
-| `ycsb-b` | shared, loaded | 95% Get / 5% Put, Zipfian keys | ops/s |
+| `readrandom` | loaded | Gets of uniformly random existing keys | ops/s |
+| `readzipf` | loaded | Gets of existing keys, Zipfian (θ = 0.99) | ops/s |
+| `readmissing` | loaded | Gets of keys that do not exist | ops/s |
+| `scanfull` | loaded | full forward scans of the whole database | entries/s |
+| `seekrandom` | loaded | Seek to a random key, then read 100 entries | scans/s |
+| `ycsb-a` | loaded, fresh copy each round | 50% Get / 50% Put, Zipfian keys | ops/s |
+| `ycsb-b` | loaded, fresh copy each round | 95% Get / 5% Put, Zipfian keys | ops/s |
 
-The **shared, loaded** database is built once per run. `--num` keys are
-inserted in random order, the database is reopened, and its compactions are
-waited out, so reads go through a realistic multi-level tree rather than one
-memtable. The read-only workloads run first. `ycsb-a` and `ycsb-b` run last,
-because their Puts overwrite existing keys and change the tree.
+A fill round does a fixed amount of work. A round on the loaded database
+repeats its operation until at least `--min_round_s` (default 3 s) has
+passed. The deadline is checked every 256 operations. Rounds of a fraction
+of a second are skewed by any brief host interruption (see "What went wrong"
+in the phase 11 journal), which is why Google Benchmark has the same
+`min_time` rule.
 
-`--threads` (default 1) splits each round's operations across that many
-threads. `scanfull` is always one thread.
+The **loaded** database is built once per run. `--num` keys are inserted in
+random order and its compactions are waited out, so reads go through a
+realistic multi-level tree rather than one memtable. That state is kept as a
+pristine copy. Workloads run against a work copy. Every round of a workload
+that writes (`ycsb-a`, `ycsb-b`, the open-loop harness) starts from a fresh
+copy of the pristine state, so each round is the same experiment, not a later
+one on a tree the previous round grew. Copying is not timed.
 
-**Zipfian keys** follow YCSB's scrambled Zipfian generator. A rank is drawn
-with probability proportional to 1/rank^θ, then hashed onto the key space,
-so the popular keys are spread across all tables instead of sitting in the
-first one.
+`--threads` (default 1) sets the number of threads issuing operations in each
+round. `cpu` and `scanfull` always use one thread.
+
+**Zipfian keys** follow YCSB's Zipfian generator. A rank is drawn with
+probability proportional to 1/rank^θ, then mapped onto the key space by
+multiplying by a fixed prime modulo the key count. That map is a
+permutation, so the popular keys are spread across all tables instead of
+sitting in the first one, and no two ranks share a key.
+
+**Host-noise probe.** The `cpu` workload times fixed CPU work, with no
+database code and no I/O, through the same protocol. If it is stable while
+an engine figure is not, CPU frequency scaling is not the cause, and the
+disturbance is elsewhere (other processes, the host's disk, or the engine).
 
 **Warm and cold cache.** By default the page cache is warm: the loaded
 database is about 120 MB and fits in memory. With `--cold`, before each read
-round the database is closed, every file in it is evicted from the page cache
-with `posix_fadvise(POSIX_FADV_DONTNEED)` (no root needed), and the database
-is reopened, which also empties the block cache. On WSL2 this evicts only
+round the database is closed, every file in it is written back and evicted
+from the page cache with `fdatasync` and `posix_fadvise(POSIX_FADV_DONTNEED)`
+(no root needed), and the database is reopened, which also empties the block
+cache. On WSL2 this evicts only
 the Linux guest's cache. Windows may still hold the virtual disk's blocks in
 its own cache, so a "cold" read on WSL2 can be served from host memory and
 is faster than a real disk read.
@@ -161,13 +178,29 @@ check, for example on a filesystem it does not recognise.
 
 ### Profiling
 
-`scripts/bench.sh --profile <workload>` runs one workload under
-`perf record -e cpu-clock --call-graph dwarf` and saves a `perf report`
-sorted by symbol. `cpu-clock` is a software timer event. Hardware counters
+`scripts/bench.sh --profile <workload>` runs one round of one workload under
+`perf record -e cpu-clock --call-graph dwarf` and saves `perf report` output
+sorted by symbol, both flat and with call graphs. perf starts with sampling
+disabled (`-D -1`). stratabench enables it through perf's control FIFOs only
+while the measured workload runs, so a read workload's profile leaves out the
+million-key load that built its database. `cpu-clock` is a software timer event. Hardware counters
 such as cycles and cache misses are not available inside WSL2. With
 `perf_event_paranoid = 2`, perf samples only user-space code, so time spent
 in the kernel (system calls, page faults) is invisible to the profile. Use
 the workload's wall-clock time to see it.
+
+The dev machine has no root, so perf is not installed system-wide. It comes
+from the Ubuntu archive, unpacked into the user's home:
+
+```bash
+cd "$(mktemp -d)"
+apt-get download linux-tools-6.8.0-146-generic linux-tools-6.8.0-146 \
+                 linux-tools-common libnuma1 libtraceevent1
+for f in *.deb; do dpkg -x "$f" ~/.local/perf-root; done
+# then run ~/.local/perf-root/usr/lib/linux-tools-6.8.0-146/perf with
+# LD_LIBRARY_PATH=~/.local/perf-root/usr/lib/x86_64-linux-gnu, or set PERF=
+# to a wrapper script that does so
+```
 
 ## Results
 
