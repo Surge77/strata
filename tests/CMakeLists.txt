@@ -57,4 +57,9 @@ if(STRATA_BUILD_TOOLS)
            COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratactl_test.sh
                    $<TARGET_FILE:stratactl>)
   set_tests_properties(stratactl_cli PROPERTIES LABELS integration)
+
+  add_test(NAME stratabench_cli
+           COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratabench_test.sh
+                   $<TARGET_FILE:stratabench>)
+  set_tests_properties(stratabench_cli PROPERTIES LABELS integration)
 endif()

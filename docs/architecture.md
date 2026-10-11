@@ -23,6 +23,15 @@ commits a `VersionEdit` to the MANIFEST. The edit records the table, the
 active log number, and the immutable memtable's last sequence number. Writes
 made during the flush stay in the new log and are not marked as flushed.
 
+Starting the fresh log creates the file, syncs the directory, and syncs the
+retired log, and it does all three while holding the DB mutex. Every read and
+write waits for those syncs. Phase 11 measured 7-39 ms per rotation and a
+62 ms open-loop p99 at half the maximum rate ([benchmarks.md](benchmarks.md)).
+This contradicts the `DBImpl` class comment, which says the mutex is never
+held across I/O. Moving the syncs out from under the mutex, without breaking
+the rule that the retired log is durable before the new one acknowledges a
+synced write, is the next change after phase 11.
+
 ## Read path
 
 `DBImpl::Get` captures the active memtable, immutable memtable, current
