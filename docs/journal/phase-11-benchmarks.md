@@ -3,6 +3,10 @@
 **Branch:** `feature/phase-11-benchmarks`. Gate: documented methodology;
 coefficient of variation ≤ 5%.
 
+> **Status: merged into `main` at `98cd44e` and tagged `phase-11`
+> (2026-10-12). The CV gate is recorded as not met on the reference laptop
+> (see "Gate" below).**
+
 ## Starting point
 
 Phases 6, 7, 9, and 10 each had a one-off benchmark binary with its own
