@@ -84,7 +84,12 @@ number of keys.
 | `ycsb-a` | loaded, fresh copy each round | 50% Get / 50% Put, Zipfian keys | ops/s |
 | `ycsb-b` | loaded, fresh copy each round | 95% Get / 5% Put, Zipfian keys | ops/s |
 
-A fill round does a fixed amount of work. A round on the loaded database
+A fill round does a fixed amount of work. It is timed from the first Put to
+the return of the last one, which measures *foreground ingest*. Flushes and
+compactions still pending at that point are not waited for, so a fill figure
+does not include the compaction debt it creates. Before the clock starts, the
+filesystem is written back (`syncfs`), so the previous round's files cannot
+be flushed during this round's fsyncs. A round on the loaded database
 repeats its operation until at least `--min_round_s` (default 3 s) has
 passed. The deadline is checked every 256 operations. Rounds of a fraction
 of a second are skewed by any brief host interruption (see "What went wrong"
@@ -204,7 +209,106 @@ for f in *.deb; do dpkg -x "$f" ~/.local/perf-root; done
 
 ## Results
 
-*Not yet recorded. Phase 11 records them here.*
+> **Gate status: not met on this machine.** In the run below, 3 of the 10
+> engine figures are stable (CV at most 5%), as is the host probe. The others are printed
+> with their CV and flagged. They are measurements, not results, until they
+> are repeated on a quieter host, and that repetition is a v1.0 release gate
+> ([roadmap](roadmap.md)). Why this machine cannot hold 5% is in the
+> [phase 11 journal](journal/phase-11-benchmarks.md#what-went-wrong).
+
+**Reference machine.** Intel Core i5-12450H laptop (4 P-cores + 4 E-cores),
+on AC power, Windows 11 "Best performance" power mode, WSL2 kernel
+6.6.114.1 with 8 vCPUs and 10.7 GiB of memory, and the WSL VM pinned to the
+P-cores (`ProcessorAffinity = 0xFF`). Scratch directory on ext4 inside the
+VM. gcc 13.3, RelWithDebInfo (`-O2 -g`), no sanitizer. Engine at the phase
+10 tag, which is unchanged since then (`src/` and `include/` are identical).
+The closed-loop table comes from stratabench at commit `f763662`. The
+open-loop table and the profiles come from `1015d35`, one commit before the
+review fixes. Those fixes changed what the fill workloads time, not the
+open-loop path or what perf samples.
+
+### Closed-loop throughput
+
+1,000,000 keys, 100-byte values, 1 thread, warm cache, 1 warm-up and 5
+measured rounds, at least 3 s per loaded-database round. The loaded tree had
+1, 4, and 49 tables in levels 0, 1, and 2.
+
+| Workload | Median | CV | Stable |
+|---|---:|---:|:-:|
+| `cpu` (host probe) | 10,825 MB/s | 1.4% | yes |
+| `fillseq` | 492,321 ops/s | 6.8% | no |
+| `fillrandom` | 428,505 ops/s | 15.1% | no |
+| `fillsync` | 820 ops/s | 2.3% | yes |
+| `readrandom` | 260,121 ops/s | 8.4% | no |
+| `readzipf` | 285,976 ops/s | 6.7% | no |
+| `readmissing` | 2,275,671 ops/s | 3.5% | yes |
+| `scanfull` | 4,894,324 entries/s | 21.9% | no |
+| `seekrandom` | 37,179 scans/s | 4.6% | yes |
+| `ycsb-a` | 322,151 ops/s | 31.2% | no |
+| `ycsb-b` | 343,702 ops/s | 7.8% | no |
+
+The figures that are stable here were unstable in other runs, and the
+reverse. Across runs on the same machine, `fillseq` medians ranged from
+492k to 762k ops/s, and the median of a figure moved by more than its own
+CV. That is why none of these numbers counts as a result yet.
+
+`fillsync` is bounded by the virtual disk's flush: about 1.2 ms per
+acknowledged write on this machine. That flush time ranged from 1.0 ms to
+4.8 ms between sessions on the same machine, so this figure says more about
+the host's disk than about the engine.
+
+### Open-loop latency
+
+90% Gets and 10% Puts, Zipfian keys, 4 workers, 5 s per round, 1 warm-up and
+5 measured rounds, each round on a fresh copy of the loaded database.
+Medians across rounds, in microseconds. The closed-loop maximum for this mix
+was 398,136 ops/s (CV 27.4%, unstable), and the four rates are 25/50/75/90%
+of it.
+
+| Offered ops/s | Achieved | Response p50 | p99 | p99.9 | Service p50 | Service p99 | |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 99,534 | 99,541 | 22.4 | 224 | 7,524 | 5.3 | 96 | |
+| 199,068 | 198,976 | 21.7 | 62,348 | 64,758 | 4.8 | 107 | |
+| 298,602 | 298,504 | 38.0 | 150,751 | 152,747 | 4.0 | 97 | saturated in 2 of 5 rounds |
+| 358,323 | 258,240 | 819,611 | 1,866,207 | 1,935,072 | 4.8 | 143 | saturated |
+| no-op at 358,323 | 358,379 | 6.8 | 49 | 94 | 0.1 | 0.3 | harness floor |
+
+What it shows, at magnitudes far beyond the noise:
+
+- **Service time never moves.** p99 stays near 100 µs at every rate. A
+  closed-loop benchmark reports exactly this column and would call the
+  engine's tail latency 100 µs.
+- **Response time does.** At half the maximum rate, p99 is 62 ms: about 1 in
+  100 requests waits behind a stall about 600 times longer than an
+  operation. That is the coordinated-omission gap the harness exists to
+  expose.
+- **The stall is the WAL rotation.** When the memtable fills, the writer
+  that rotates it creates the new log, fsyncs the directory, and fsyncs the
+  retired log (up to 4 MB of unsynced data), all while holding the DB mutex
+  (`DBImpl::NewLogFile`). Every Get and Put waits behind it. Puts timed
+  individually show a p99.9 of about 300 µs and maxima of 7-39 ms, about
+  one per rotation. A reads-only open-loop run at the same rate has no such
+  tail after warm-up (p99 about 200 µs). The fix is a separate change with
+  its own crash tests (see the phase 11 journal).
+- **The harness floor is about 7 µs at p50** and 49 µs at p99. strata's
+  medians of 22 µs are therefore about 15 µs of engine time.
+
+### Where the time goes (perf, one round each)
+
+| Workload | Top symbols (share of user-space samples) |
+|---|---|
+| `readrandom` | crc32c 12.3%, varint decoding 8.0%, block-cache hash lookup 7.8%, Bloom probe 7.1%, block seek 3.7%, malloc/free 5.2% |
+| `fillrandom` | skiplist insert 10.2%, varint decoding 8.4%, merging iterator 3.6% (compaction), crc32c 3.6% |
+| `ycsb-a` | varint decoding 11.4%, memtable Get 7.2%, skiplist insert 5.3%, block-cache lookup 4.2%, crc32c 4.2% |
+
+`readrandom` reads a 120 MB tree through an 8 MB block cache, so most Gets
+miss the cache. A miss costs a `pread` from the page cache, a crc32c check of
+the block (12%), parsing it (varint decoding, block seek), a cache insert,
+and an eviction (allocation and hash-table work, about 15% together). None
+of this is pathological. It is what a cache a fifteenth the size of the
+data costs. Varint decoding appears in all three profiles because every
+block entry and memtable key is length-prefixed. It is the first thing to
+look at if point reads need to get faster.
 
 ## Reproducing a run
 

@@ -49,3 +49,6 @@ word in a README.
 - Fuzzers clean for one hour each on the log reader, SSTable reader, and manifest reader,
   with the same honesty rule.
 - Every number in the README traceable to a reproducible run on stated hardware.
+- The benchmark suite re-measured on a host where the `cpu` probe and every gated figure
+  hold CV ≤ 5%. Phase 11 could not get there on the WSL2 laptop, and recorded the gate as
+  unmet rather than lowering it (see `docs/journal/phase-11-benchmarks.md`).
