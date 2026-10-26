@@ -112,7 +112,10 @@ class DBImpl {
   Status OpenDatabase();
   // `newest` enables torn-tail handling for damage at the very end of the log.
   Status RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber* max_sequence);
-  Status NewLogFile();
+  // Creates the next log and retires the current one, syncing it. Called with
+  // mutex_ held; releases it around the I/O if `lock` is non-null, which only
+  // the leading writer (or Open, before anyone else can run) may do.
+  Status NewLogFile(std::unique_lock<std::mutex>* lock);
   // Flushes `mem` to a new level-0 table and records it in `edit`. Called with
   // mutex_ held; releases it around the I/O if `lock` is non-null.
   Status WriteLevel0Table(MemTable* mem, VersionEdit* edit, std::unique_lock<std::mutex>* lock);
@@ -133,7 +136,8 @@ class DBImpl {
   // *last_writer at the last writer included.
   void BuildBatchGroup(Writer** last_writer);
   // Makes the active memtable immutable, on a fresh log, for the flush.
-  Status SwitchMemTable();
+  // Releases the mutex around the log rotation's I/O (see NewLogFile).
+  Status SwitchMemTable(std::unique_lock<std::mutex>* lock);
   void DeleteObsoleteFiles();
 
   // Background work, in db_impl_background.cpp.
