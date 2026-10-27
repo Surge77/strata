@@ -30,8 +30,11 @@ add_library(strata STATIC
     util/comparator.cpp
     util/crc32c.cpp
     util/env_posix.cpp
+    util/event_log.cpp
     util/histogram.cpp
+    util/json.cpp
     util/logger.cpp
+    util/metrics.cpp
     util/status.cpp
     version.cpp)
 

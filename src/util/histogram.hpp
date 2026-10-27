@@ -48,6 +48,15 @@ class Histogram {
   // Exclusive, saturating at UINT64_MAX for the top bucket.
   [[nodiscard]] static std::uint64_t BucketUpperBound(std::size_t bucket) noexcept;
 
+  // A histogram rebuilt from bucket counts kept elsewhere (by
+  // ConcurrentHistogram, which cannot run Welford's update without a lock).
+  // Count, min, max, mean, and percentiles are what direct Adds would give;
+  // the standard deviation is estimated from bucket midpoints, so it is off
+  // by up to a bucket's width.
+  [[nodiscard]] static Histogram FromBuckets(const std::array<std::uint64_t, kBucketCount>& buckets,
+                                             std::uint64_t min, std::uint64_t max,
+                                             std::uint64_t sum) noexcept;
+
  private:
   std::array<std::uint64_t, kBucketCount> buckets_{};
   std::uint64_t count_ = 0;

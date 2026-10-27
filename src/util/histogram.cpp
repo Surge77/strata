@@ -77,6 +77,33 @@ void Histogram::Merge(const Histogram& other) noexcept {
   max_ = std::max(max_, other.max_);
 }
 
+Histogram Histogram::FromBuckets(const std::array<std::uint64_t, kBucketCount>& buckets,
+                                 std::uint64_t min, std::uint64_t max, std::uint64_t sum) noexcept {
+  Histogram histogram;
+  histogram.buckets_ = buckets;
+  for (const std::uint64_t in_bucket : buckets) {
+    histogram.count_ += in_bucket;
+  }
+  if (histogram.count_ == 0) {
+    return histogram;
+  }
+  histogram.min_ = min;
+  histogram.max_ = max;
+  histogram.mean_ = static_cast<double>(sum) / static_cast<double>(histogram.count_);
+  for (std::size_t bucket = 0; bucket < kBucketCount; ++bucket) {
+    if (buckets[bucket] == 0) {
+      continue;
+    }
+    // The bucket's midpoint, clamped like Percentile so the extreme buckets
+    // do not stretch the spread past the real min and max.
+    const double lower = static_cast<double>(std::max(BucketLowerBound(bucket), min));
+    const double upper = static_cast<double>(std::min(BucketUpperBound(bucket) - 1, max));
+    const double deviation = (lower + upper) / 2.0 - histogram.mean_;
+    histogram.squared_deviations_ += static_cast<double>(buckets[bucket]) * deviation * deviation;
+  }
+  return histogram;
+}
+
 void Histogram::Clear() noexcept {
   *this = Histogram();
 }
