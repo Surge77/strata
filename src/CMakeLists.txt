@@ -20,6 +20,8 @@ add_library(strata STATIC
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp
+    obs/http.cpp
+    obs/stats_server.cpp
     table/block.cpp
     table/block_builder.cpp
     table/bloom_filter.cpp
