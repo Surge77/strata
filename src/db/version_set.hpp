@@ -23,6 +23,12 @@ namespace strata {
 // Readers hold a Version (via shared_ptr) for the length of a read, so the
 // files it lists cannot be deleted underneath them; garbage collection only
 // removes files no live Version mentions.
+// What one Version::Get did with tables, for the stats API.
+struct ReadCounters {
+  std::uint64_t table_reads = 0;   // tables searched past the filter
+  std::uint64_t filter_skips = 0;  // tables the Bloom filter ruled out
+};
+
 class Version {
  public:
   explicit Version(const InternalKeyComparator* comparator) : comparator_(comparator) {}
@@ -44,8 +50,9 @@ class Version {
   // number in this Version's tables, with the same three outcomes as the
   // memtable. Level-0 tables may overlap, so they are searched newest first;
   // deeper levels (phase 7) hold disjoint ranges.
-  Result<MemTable::LookupResult> Get(const LookupKey& key, std::string* value,
-                                     TableCache* tables) const;
+  // `counters`, if not null, is added to.
+  Result<MemTable::LookupResult> Get(const LookupKey& key, std::string* value, TableCache* tables,
+                                     ReadCounters* counters = nullptr) const;
 
   // Appends iterators that together cover every table of this Version, for a
   // merged scan: one per level-0 table (they overlap), and one concatenating

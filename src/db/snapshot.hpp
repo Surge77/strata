@@ -50,6 +50,7 @@ class SnapshotList {
   }
 
   [[nodiscard]] bool empty() const noexcept { return snapshots_.empty(); }
+  [[nodiscard]] std::size_t size() const noexcept { return snapshots_.size(); }
   // Precondition: !empty().
   [[nodiscard]] SequenceNumber oldest() const { return snapshots_.front().sequence(); }
 

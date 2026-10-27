@@ -103,6 +103,9 @@ class OutputWriter {
     STRATA_RETURN_IF_ERROR(file_->Close());
     current_.file_size = builder_->FileSize();
     stats_->bytes_written += current_.file_size;
+    if (options_.bytes_written_progress != nullptr) {
+      options_.bytes_written_progress->fetch_add(current_.file_size, std::memory_order_relaxed);
+    }
     outputs_.push_back(std::move(current_));
     builder_ = nullptr;
     file_ = nullptr;

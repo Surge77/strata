@@ -5,6 +5,7 @@
 #include "strata/result.hpp"
 #include "strata/slice.hpp"
 #include "strata/snapshot.hpp"
+#include "strata/stats.hpp"
 #include "strata/status.hpp"
 #include "strata/write_batch.hpp"
 
@@ -85,6 +86,12 @@ class DB {
   // Gives back a snapshot from GetSnapshot. InvalidArgument for a null,
   // already released, or foreign snapshot.
   Status ReleaseSnapshot(const Snapshot* snapshot);
+
+  // A point-in-time view of what the database holds and has done: counters,
+  // latencies, levels, the running compaction, and recent events (see
+  // include/strata/stats.hpp and docs/observability.md). No I/O; safe from
+  // any thread at any rate. InvalidArgument if the database is closed.
+  [[nodiscard]] Result<Stats> GetStats() const;
 
   // Syncs the write-ahead log -- so after a successful Close every write is
   // durable against power loss, whatever its WriteOptions -- then releases

@@ -1,6 +1,7 @@
 #include "db/db_impl.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -14,6 +15,15 @@
 
 namespace strata {
 namespace {
+
+// Events kept for the stats API beyond those recorded during Open.
+constexpr std::size_t kRecentEvents = 256;
+
+std::uint64_t MicrosSince(std::chrono::steady_clock::time_point start) {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - start)
+                                        .count());
+}
 
 // Applies a batch's operations to the memtable with consecutive sequence
 // numbers starting at the batch's own.
@@ -56,12 +66,12 @@ Status InFile(const Status& status, const std::string& file) {
 // because that depends on what follows the damage.
 class RecoveryReporter final : public log::Reader::Reporter {
  public:
-  RecoveryReporter(Logger* info_log, std::string file)
-      : info_log_(info_log), file_(std::move(file)) {}
+  RecoveryReporter(EventLog* events, std::string file) : events_(events), file_(std::move(file)) {}
 
   void Corruption(std::size_t bytes_dropped, const Status& reason) override {
-    Log(info_log_, LogLevel::kWarn, "{}: dropping {} bytes: {}", file_, bytes_dropped,
-        reason.ToString());
+    events_->Record(
+        LogLevel::kWarn, "wal_corruption_skipped",
+        {Field("file", file_), Field("bytes", bytes_dropped), Field("reason", reason.ToString())});
     if (reason.IsIoError() && io_error_.ok()) {
       io_error_ = InFile(reason, file_);
     }
@@ -76,7 +86,7 @@ class RecoveryReporter final : public log::Reader::Reporter {
   [[nodiscard]] std::uint64_t problems() const noexcept { return problems_; }
 
  private:
-  Logger* info_log_;
+  EventLog* events_;
   std::string file_;
   Status first_problem_;
   Status io_error_;
@@ -89,7 +99,8 @@ DBImpl::DBImpl(const Options& options)
     : options_(options),
       env_(options.env != nullptr ? options.env : Env::Default()),
       dbname_(options.path),
-      info_log_(options.info_log) {}
+      info_log_(options.info_log),
+      events_(options.info_log, kRecentEvents) {}
 
 DBImpl::~DBImpl() {
   static_cast<void>(Close());
@@ -160,8 +171,9 @@ Status DBImpl::OpenDatabase() {
     // repeated failed attempts to reopen.
     STRATA_ASSIGN_OR_RETURN(owned_info_log_, NewFileLogger(env_, InfoLogFileName(dbname_)));
     info_log_ = owned_info_log_.get();
+    events_.SetLogger(info_log_);
   }
-  Log(info_log_, LogLevel::kInfo, "=== opening {} ===", dbname_);
+  events_.Record(LogLevel::kInfo, "db_opening", {Field("path", dbname_)});
 
   // Replay, in creation order, every log not yet flushed to a table.
   std::sort(logs.begin(), logs.end());
@@ -189,15 +201,16 @@ Status DBImpl::OpenDatabase() {
   DeleteObsoleteFiles();
 
   background_thread_ = std::thread([this] { BackgroundLoop(); });
-  Log(info_log_, LogLevel::kInfo, "opened {}: replayed {} log(s), last sequence {}", dbname_,
-      logs.size(), last_sequence_);
+  events_.Record(LogLevel::kInfo, "db_opened",
+                 {Field("logs_replayed", logs.size()), Field("last_sequence", last_sequence_)});
+  events_.MarkOpened();
   return Status::Ok();
 }
 
 Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber* max_sequence) {
   const std::string file_name = LogFileName(dbname_, number);
   STRATA_ASSIGN_OR_RETURN(auto file, env_->NewSequentialFile(file_name));
-  RecoveryReporter reporter(info_log_, file_name);
+  RecoveryReporter reporter(&events_, file_name);
   log::Reader reader(file.get(), &reporter);
 
   Slice record;
@@ -245,13 +258,13 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
       // what an interrupted append looks like -- including after power loss,
       // when a record's first block can survive while the next reads back as
       // zeros. Nothing in it was acknowledged as durable.
-      Log(info_log_, LogLevel::kWarn,
-          "{}: treating damage at the end of the newest log as a torn write", file_name);
+      events_.Record(LogLevel::kWarn, "wal_torn_tail", {Field("file", file_name)});
     } else if (!options_.ignore_wal_corruption) {
       return reporter.first_problem();
     }
   }
-  Log(info_log_, LogLevel::kInfo, "{}: {} batch(es) applied", file_name, applied);
+  events_.Record(LogLevel::kInfo, "wal_replayed",
+                 {Field("log", number), Field("batches", applied)});
   return Status::Ok();
 }
 
@@ -292,6 +305,10 @@ Status DBImpl::NewLogFile(std::unique_lock<std::mutex>* lock) {
   log_file_ = std::move(*created);
   log_ = std::make_unique<log::Writer>(log_file_.get());
   log_number_ = number;
+  if (retired != nullptr) {
+    ++stats_.log_rotations;
+    events_.Record(LogLevel::kInfo, "log_rotated", {Field("log", number)});
+  }
   return Status::Ok();
 }
 
@@ -301,6 +318,7 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   meta.number = versions_->NewFileNumber();
   pending_outputs_.insert(meta.number);
   auto it = mem->NewIterator();
+  const auto start = std::chrono::steady_clock::now();
   if (lock != nullptr) {
     lock->unlock();
   }
@@ -312,7 +330,10 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   pending_outputs_.erase(meta.number);
   STRATA_RETURN_IF_ERROR(status);
   if (meta.file_size > 0) {
-    Log(info_log_, LogLevel::kInfo, "flushed table {} ({} bytes)", meta.number, meta.file_size);
+    events_.Record(LogLevel::kInfo, "flush_finished",
+                   {Field("table", meta.number), Field("bytes", meta.file_size),
+                    Field("micros", MicrosSince(start))});
+    ++stats_.flushes;
     stats_.flush_bytes_written += meta.file_size;
     edit->AddFile(0, std::move(meta));
   }
@@ -368,7 +389,11 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   if (batch.Count() == 0) {
     return Status::Ok();
   }
-  return WriteImpl(options, &batch);
+  const auto start = std::chrono::steady_clock::now();
+  Status status = WriteImpl(options, &batch);
+  hot_.write_calls.Add();
+  hot_.write_micros.Add(MicrosSince(start));
+  return status;
 }
 
 Status DBImpl::WriteImpl(const WriteOptions& options, const WriteBatch* batch) {
@@ -427,8 +452,8 @@ Status DBImpl::WriteImpl(const WriteOptions& options, const WriteBatch* batch) {
     } else {
       background_error_ = status;
       background_done_.notify_all();  // waiters re-check background_error_
-      Log(info_log_, LogLevel::kError, "write to log {} failed; refusing further writes: {}",
-          log_number_, status.ToString());
+      events_.Record(LogLevel::kError, "write_failed",
+                     {Field("log", log_number_), Field("error", status.ToString())});
     }
     group_batch_.Clear();
   }
@@ -495,6 +520,21 @@ std::size_t DBImpl::QueuedWritersForTest() {
 }
 
 Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
+  const auto start = std::chrono::steady_clock::now();
+  Result<std::string> result = GetImpl(options, key);
+  // A call refused before any lookup (oversized key, closed database,
+  // foreign snapshot) is not a read.
+  if (result.ok() || !result.status().IsInvalidArgument()) {
+    hot_.get_calls.Add();
+    if (result.ok()) {
+      hot_.get_found.Add();
+    }
+    hot_.get_micros.Add(MicrosSince(start));
+  }
+  return result;
+}
+
+Result<std::string> DBImpl::GetImpl(const ReadOptions& options, Slice key) {
   if (key.size() > WriteBatch::kMaxKeySize) {
     return Status::InvalidArgument("key exceeds the size limit");
   }
@@ -529,15 +569,21 @@ Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
     }
     switch (table->Get(lookup, &value)) {
       case MemTable::LookupResult::kFound:
+        hot_.get_memtable_answers.Add();
         return value;
       case MemTable::LookupResult::kDeleted:
+        hot_.get_memtable_answers.Add();
         return Status::NotFound();
       case MemTable::LookupResult::kNotPresent:
         break;
     }
   }
-  STRATA_ASSIGN_OR_RETURN(const auto found, version->Get(lookup, &value, table_cache_.get()));
-  if (found == MemTable::LookupResult::kFound) {
+  ReadCounters counters;
+  const auto found = version->Get(lookup, &value, table_cache_.get(), &counters);
+  hot_.get_table_reads.Add(counters.table_reads);
+  hot_.get_filter_skips.Add(counters.filter_skips);
+  STRATA_RETURN_IF_ERROR(found.status());
+  if (*found == MemTable::LookupResult::kFound) {
     return value;
   }
   return Status::NotFound();
@@ -572,6 +618,7 @@ Status DBImpl::FlushMemTableForTest() {
 }
 
 std::unique_ptr<Iterator> DBImpl::NewIterator(const ReadOptions& options) {
+  hot_.iterators.Add();
   std::shared_ptr<MemTable> mem;
   std::shared_ptr<MemTable> imm;
   std::shared_ptr<const Version> version;
@@ -663,7 +710,7 @@ Status DBImpl::Close() {
       status = closed;
     }
     log_file_ = nullptr;
-    Log(info_log_, LogLevel::kInfo, "closed {}", dbname_);
+    events_.Record(LogLevel::kInfo, "db_closed");
   }
   return status;
 }

@@ -44,6 +44,12 @@ class TableCache {
   Result<std::unique_ptr<Iterator>> NewIterator(std::uint64_t number, std::uint64_t file_size);
   void Evict(std::uint64_t number);
 
+  [[nodiscard]] LruCacheStats TableStats() const { return tables_.Stats(); }
+  // Zeros if the block cache is disabled.
+  [[nodiscard]] LruCacheStats BlockStats() const {
+    return block_cache_ != nullptr ? block_cache_->Stats() : LruCacheStats{};
+  }
+
  private:
   // Each open table counts as one unit of capacity.
   static constexpr std::size_t kTableCharge = 1;

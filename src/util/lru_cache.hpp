@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <list>
@@ -10,6 +11,15 @@
 #include <utility>
 
 namespace strata {
+
+// What a cache has done and holds, for the stats API.
+struct LruCacheStats {
+  std::uint64_t hits = 0;
+  std::uint64_t misses = 0;
+  std::size_t usage = 0;
+  std::size_t capacity = 0;
+  std::size_t entries = 0;
+};
 
 // A thread-safe, capacity-bounded cache that evicts the least recently used
 // entries first. Each entry has a caller-chosen charge (1 for "one open
@@ -37,8 +47,10 @@ class LruCache {
     const std::lock_guard<std::mutex> guard(mutex_);
     const auto found = index_.find(key);
     if (found == index_.end()) {
+      ++misses_;
       return nullptr;
     }
+    ++hits_;
     entries_.splice(entries_.begin(), entries_, found->second);
     return found->second->value;
   }
@@ -84,6 +96,17 @@ class LruCache {
     return usage_;
   }
 
+  // Counted under the lock every Lookup already takes, so the hot path pays
+  // two increments and nothing else.
+  [[nodiscard]] LruCacheStats Stats() const {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    return LruCacheStats{.hits = hits_,
+                         .misses = misses_,
+                         .usage = usage_,
+                         .capacity = capacity_,
+                         .entries = index_.size()};
+  }
+
  private:
   struct Entry {
     Key key;
@@ -103,6 +126,8 @@ class LruCache {
   EntryList entries_;  // most recently used first
   std::unordered_map<Key, typename EntryList::iterator, Hash> index_;
   std::size_t usage_ = 0;
+  std::uint64_t hits_ = 0;
+  std::uint64_t misses_ = 0;
 };
 
 }  // namespace strata

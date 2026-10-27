@@ -54,6 +54,10 @@ Status DB::Write(const WriteBatch& batch, const WriteOptions& options) {
   return impl_ != nullptr ? impl_->Write(options, batch) : NotOpen();
 }
 
+Result<Stats> DB::GetStats() const {
+  return impl_ != nullptr ? impl_->CollectStats() : Result<Stats>(NotOpen());
+}
+
 Result<std::string> DB::Get(Slice key, const ReadOptions& options) const {
   if (impl_ == nullptr) {
     return NotOpen();
