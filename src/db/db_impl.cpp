@@ -178,7 +178,7 @@ Status DBImpl::OpenDatabase() {
   // the new log number in one MANIFEST edit. Until that commit the old logs
   // stay authoritative; after it they are obsolete. This also starts the
   // session's new MANIFEST and publishes it through CURRENT.
-  STRATA_RETURN_IF_ERROR(NewLogFile());
+  STRATA_RETURN_IF_ERROR(NewLogFile(/*lock=*/nullptr));
   VersionEdit edit;
   if (!mem_->empty()) {
     STRATA_RETURN_IF_ERROR(WriteLevel0Table(mem_.get(), &edit, nullptr));
@@ -255,21 +255,41 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
   return Status::Ok();
 }
 
-Status DBImpl::NewLogFile() {
+Status DBImpl::NewLogFile(std::unique_lock<std::mutex>* lock) {
   const std::uint64_t number = versions_->NewFileNumber();
   const std::string file_name = LogFileName(dbname_, number);
-  STRATA_ASSIGN_OR_RETURN(auto file, env_->NewWritableFile(file_name));
-  // Make the new log's *name* durable before any write relies on it.
-  STRATA_RETURN_IF_ERROR(env_->SyncDir(dbname_));
-  if (log_file_ != nullptr) {
-    // Sync the log being retired before a newer one can take synced writes:
-    // otherwise power loss could keep a later synced write while losing
-    // earlier unsynced ones, leaving a state that is not a prefix of what was
-    // acknowledged.
-    STRATA_RETURN_IF_ERROR(log_file_->Sync());
+  WritableFile* const retired = log_file_.get();
+  // The I/O below can take tens of milliseconds (the retired log may hold
+  // write_buffer_size unsynced bytes), so it runs without the mutex. That is
+  // safe because only the leading writer rotates and only it touches the log:
+  // queued writers wait their turn, readers keep using the current memtable,
+  // which takes no writes meanwhile, Close waits for the writer queue to
+  // drain, and obsolete-file cleanup keeps every log at or above the
+  // committed log number, which this one is.
+  if (lock != nullptr) {
+    lock->unlock();
+  }
+  auto created = [&]() -> Result<std::unique_ptr<WritableFile>> {
+    STRATA_ASSIGN_OR_RETURN(auto file, env_->NewWritableFile(file_name));
+    // Make the new log's *name* durable before any write relies on it.
+    STRATA_RETURN_IF_ERROR(env_->SyncDir(dbname_));
+    if (retired != nullptr) {
+      // Sync the log being retired before a newer one can take synced
+      // writes: otherwise power loss could keep a later synced write while
+      // losing earlier unsynced ones, leaving a state that is not a prefix of
+      // what was acknowledged.
+      STRATA_RETURN_IF_ERROR(retired->Sync());
+    }
+    return file;
+  }();
+  if (lock != nullptr) {
+    lock->lock();
+  }
+  if (!created.ok()) {
+    return created.status();
   }
   log_ = nullptr;
-  log_file_ = std::move(file);
+  log_file_ = std::move(*created);
   log_ = std::make_unique<log::Writer>(log_file_.get());
   log_number_ = number;
   return Status::Ok();

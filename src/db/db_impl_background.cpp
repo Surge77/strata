@@ -50,13 +50,13 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>* lock, bool force) 
       background_done_.wait(*lock);  // until compaction shortens level 0
       continue;
     }
-    STRATA_RETURN_IF_ERROR(SwitchMemTable());
+    STRATA_RETURN_IF_ERROR(SwitchMemTable(lock));
     force = false;  // the fresh memtable is empty, so the next pass returns
   }
 }
 
-Status DBImpl::SwitchMemTable() {
-  if (Status status = NewLogFile(); !status.ok()) {
+Status DBImpl::SwitchMemTable(std::unique_lock<std::mutex>* lock) {
+  if (Status status = NewLogFile(lock); !status.ok()) {
     background_error_ = status;
     background_done_.notify_all();  // waiters re-check background_error_
     return status;
