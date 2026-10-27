@@ -2,13 +2,18 @@
 //
 // Every phase adds the command that makes its feature demonstrable from a
 // terminal (see docs/roadmap.md). Phase 3: put, get, delete. Phase 4: dump-sst.
+// Phase 12: stats, serve.
 //
 // Exit codes: 0 success, 1 key not found, 2 usage error, 3 database error.
 
 #include "strata/db.hpp"
 #include "strata/env.hpp"
+#include "strata/stats.hpp"
+#include "strata/stats_server.hpp"
 #include "strata/version.hpp"
 
+#include <charconv>
+#include <csignal>
 #include <iostream>
 #include <span>
 #include <string>
@@ -33,6 +38,9 @@ void PrintUsage(std::ostream& out) {
       << "  get <db> <key>                    Print a key's value (exit 1 if absent)\n"
       << "  delete <db> <key> [--sync]        Remove a key\n"
       << "  dump-sst <file>                   Print an SSTable's entries\n"
+      << "  stats <db>                        Print the database's stats as JSON\n"
+      << "  serve <db> [--port N] [--bind A]  Serve /stats and /healthz over HTTP until\n"
+      << "                                    interrupted (default 127.0.0.1, a free port)\n"
       << "  version                           Print the library version\n"
       << "  help                              Print this message\n";
 }
@@ -105,6 +113,87 @@ int DumpSst(const std::string& path) {
   return kExitOk;
 }
 
+// Opens an existing database: inspecting a path must not create one there.
+bool OpenExistingDb(const std::string& path, strata::DB* db, int* exit_code) {
+  const strata::Status status = strata::DB::Open({.path = path, .create_if_missing = false}, db);
+  if (!status.ok()) {
+    *exit_code = Fail(status);
+    return false;
+  }
+  return true;
+}
+
+int PrintStats(const std::string& path) {
+  strata::DB db;
+  int exit_code = kExitOk;
+  if (!OpenExistingDb(path, &db, &exit_code)) {
+    return exit_code;
+  }
+  const auto stats = db.GetStats();
+  if (!stats.ok()) {
+    return Fail(stats.status());
+  }
+  std::cout << strata::StatsToJson(*stats) << '\n';
+  return kExitOk;
+}
+
+// serve <db> [--port N] [--bind ADDRESS]
+int Serve(std::span<char*> args) {
+  if (args.empty()) {
+    return kExitUsage;
+  }
+  strata::StatsServerOptions options;
+  for (std::size_t i = 1; i < args.size(); i += 2) {
+    const std::string_view flag = args[i];
+    if (i + 1 >= args.size()) {
+      return kExitUsage;
+    }
+    const std::string_view value = args[i + 1];
+    if (flag == "--bind") {
+      options.bind_address = value;
+    } else if (flag == "--port") {
+      const auto [end, error] =
+          std::from_chars(value.data(), value.data() + value.size(), options.port);
+      if (error != std::errc{} || end != value.data() + value.size()) {
+        return kExitUsage;
+      }
+    } else {
+      return kExitUsage;
+    }
+  }
+
+  // Blocked before the server starts its thread, which inherits the mask, so
+  // SIGINT and SIGTERM reach only the sigwait below and Ctrl-C shuts down
+  // cleanly: the server stops and the database closes, syncing its log.
+  sigset_t stop_signals;
+  sigemptyset(&stop_signals);
+  sigaddset(&stop_signals, SIGINT);
+  sigaddset(&stop_signals, SIGTERM);
+  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
+
+  strata::DB db;
+  int exit_code = kExitOk;
+  if (!OpenExistingDb(args[0], &db, &exit_code)) {
+    return exit_code;
+  }
+  if (options.bind_address != "127.0.0.1" && options.bind_address != "::1") {
+    std::cerr << "stratactl: warning: serving on " << options.bind_address
+              << " with no authentication or TLS (see docs/observability.md)\n";
+  }
+  auto server = strata::StatsServer::Start(&db, options);
+  if (!server.ok()) {
+    return Fail(server.status());
+  }
+  const bool v6 = options.bind_address.find(':') != std::string::npos;
+  std::cout << "serving http://" << (v6 ? "[" : "") << options.bind_address << (v6 ? "]" : "")
+            << ':' << (*server)->port() << "/stats" << std::endl;
+  int signal = 0;
+  sigwait(&stop_signals, &signal);
+  (*server)->Stop();
+  const strata::Status closed = db.Close();
+  return closed.ok() ? kExitOk : Fail(closed);
+}
+
 int RunDataCommand(std::string_view command, std::span<char*> args) {
   const bool sync = args.size() > 0 && std::string_view(args.back()) == "--sync";
   const std::size_t positional = args.size() - (sync ? 1 : 0);
@@ -174,6 +263,16 @@ int main(int argc, char** argv) {
       return kExitUsage;
     }
     return DumpSst(args[2]);
+  }
+  if (command == "stats" && args.size() == 3) {
+    return PrintStats(args[2]);
+  }
+  if (command == "serve") {
+    const int code = Serve(args.subspan(2));
+    if (code == kExitUsage) {
+      PrintUsage(std::cerr);
+    }
+    return code;
   }
   if (command == "put" || command == "get" || command == "delete") {
     return RunDataCommand(command, args.subspan(2));
