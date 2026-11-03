@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <format>
+
+#include <poll.h>
+#include <sys/socket.h>
 
 namespace strata::http {
 namespace {
@@ -171,6 +175,41 @@ std::string Response(int status, std::string_view content_type, std::string_view
     response.append(body);
   }
   return response;
+}
+
+bool WaitFor(int fd, short events, Deadline deadline) {
+  while (true) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    if (left.count() <= 0) {
+      return false;
+    }
+    pollfd ready{.fd = fd, .events = events, .revents = 0};
+    const int result = ::poll(&ready, 1, static_cast<int>(left.count()));
+    if (result < 0 && errno == EINTR) {
+      continue;
+    }
+    return result > 0;
+  }
+}
+
+bool SendAll(int fd, std::string_view data, Deadline deadline) {
+  while (!data.empty()) {
+    const ssize_t sent = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
+    if (sent > 0) {
+      data.remove_prefix(static_cast<std::size_t>(sent));
+      continue;
+    }
+    if (sent < 0 && errno == EINTR) {
+      continue;
+    }
+    // EWOULDBLOCK is the same value as EAGAIN on Linux, the only target.
+    if (sent < 0 && errno == EAGAIN && WaitFor(fd, POLLOUT, deadline)) {
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 }  // namespace strata::http

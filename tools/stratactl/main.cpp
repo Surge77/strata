@@ -189,6 +189,9 @@ int Serve(std::span<char*> args) {
             << ':' << (*server)->port() << "/stats" << std::endl;
   int signal = 0;
   sigwait(&stop_signals, &signal);
+  // A second Ctrl-C during the shutdown below (up to a few seconds) should
+  // still end the process, so the default dispositions come back.
+  pthread_sigmask(SIG_UNBLOCK, &stop_signals, nullptr);
   (*server)->Stop();
   const strata::Status closed = db.Close();
   return closed.ok() ? kExitOk : Fail(closed);

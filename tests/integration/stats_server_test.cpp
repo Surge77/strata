@@ -3,6 +3,7 @@
 #include "strata/stats_server.hpp"
 
 #include "strata/db.hpp"
+#include "strata/write_batch.hpp"
 
 #include <array>
 #include <chrono>
@@ -15,6 +16,7 @@
 #include <unistd.h>
 
 #include "obs/http.hpp"
+#include "support/fault_injection_env.hpp"
 #include "support/test_dir.hpp"
 
 namespace strata {
@@ -131,8 +133,10 @@ TEST_F(StatsServerTest, Http11WithoutHostIs400ButHttp10IsServed) {
 }
 
 TEST_F(StatsServerTest, AClientThatNeverReadsIsDroppedAtTheDeadline) {
-  // Pipeline many requests and read nothing: the server must give up on
-  // this client within its deadline and go on serving others.
+  // Send a request and read nothing: the server must go on serving others
+  // within its deadline. The response fits in the socket buffers here, so
+  // this checks the server is not stuck on the client; the send deadline for
+  // a response that does not fit is tested on SendAll (http_test.cpp).
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   const int small = 1024;
   ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &small, sizeof(small));
@@ -168,10 +172,35 @@ TEST_F(StatsServerTest, AnIncompleteRequestTimesOutAndTheServerMovesOn) {
   EXPECT_TRUE(Get(server_->port(), "/healthz").starts_with("HTTP/1.1 200"));
 }
 
+// Closing a DB while its server runs is a race (stats_server.hpp), so the
+// server is stopped first and a new one started on the closed handle.
 TEST_F(StatsServerTest, AClosedDatabaseIs503) {
+  server_->Stop();
   ASSERT_TRUE(db_.Close().ok());
-  EXPECT_TRUE(Get(server_->port(), "/stats").starts_with("HTTP/1.1 503"));
-  EXPECT_TRUE(Get(server_->port(), "/healthz").starts_with("HTTP/1.1 503"));
+  auto server = StatsServer::Start(&db_);
+  ASSERT_TRUE(server.ok()) << server.status().ToString();
+  EXPECT_TRUE(Get((*server)->port(), "/stats").starts_with("HTTP/1.1 503"));
+  EXPECT_TRUE(Get((*server)->port(), "/healthz").starts_with("HTTP/1.1 503"));
+}
+
+TEST(StatsServerHealthTest, HealthzIs503WithTheReasonOnceWritesAreRefused) {
+  TestDir dir("stats_server_health");
+  test::FaultInjectionEnv env(Env::Default());
+  DB db;
+  ASSERT_TRUE(DB::Open({.path = dir.File("db"), .env = &env}, &db).ok());
+  env.SetSyncFailure(true, ".log");
+  WriteBatch batch;
+  batch.Put("a", "1");
+  EXPECT_FALSE(db.Write(batch, WriteOptions{.sync = true}).ok());
+  {
+    auto server = StatsServer::Start(&db);
+    ASSERT_TRUE(server.ok()) << server.status().ToString();
+    const std::string response = Get((*server)->port(), "/healthz");
+    EXPECT_TRUE(response.starts_with("HTTP/1.1 503")) << response;
+    EXPECT_NE(Body(response).find("IoError"), std::string::npos) << response;
+  }
+  env.SetSyncFailure(false);
+  static_cast<void>(db.Close());
 }
 
 TEST_F(StatsServerTest, StopIsIdempotentAndClosesThePort) {
@@ -205,7 +234,30 @@ TEST(StatsServerStartTest, ServesOverIpv6Loopback) {
   if (!server.ok()) {
     GTEST_SKIP() << "no IPv6 loopback here: " << server.status().ToString();
   }
-  EXPECT_NE((*server)->port(), 0);
+  const std::uint16_t port = (*server)->port();
+  const auto exchange_v6 = [port](const std::string& host) {
+    const int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(port);
+    address.sin6_addr = in6addr_loopback;
+    std::string response;
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
+      const std::string request = "GET /healthz HTTP/1.1\r\nHost: " + host + "\r\n\r\n";
+      static_cast<void>(::send(fd, request.data(), request.size(), MSG_NOSIGNAL));
+      std::array<char, 4096> chunk{};
+      ssize_t n = 0;
+      while ((n = ::recv(fd, chunk.data(), chunk.size(), 0)) > 0) {
+        response.append(chunk.data(), static_cast<std::size_t>(n));
+      }
+    }
+    ::close(fd);
+    return response;
+  };
+  EXPECT_TRUE(exchange_v6("[::1]:" + std::to_string(port)).starts_with("HTTP/1.1 200"));
+  // The DNS-rebinding check applies on the IPv6 loopback too.
+  EXPECT_TRUE(exchange_v6("attacker.example").starts_with("HTTP/1.1 403"));
+  (*server)->Stop();
 }
 
 }  // namespace

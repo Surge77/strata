@@ -1,8 +1,13 @@
 #include "obs/http.hpp"
 
+#include <array>
+#include <chrono>
 #include <string>
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace strata::http {
 namespace {
@@ -88,6 +93,53 @@ TEST(ResponseTest, HeadKeepsTheLengthButDropsTheBody) {
   EXPECT_NE(response.find("Content-Length: 2\r\n"), std::string::npos);
   EXPECT_NE(response.find("Allow: GET, HEAD\r\n\r\n"), std::string::npos);
   EXPECT_TRUE(response.ends_with("\r\n\r\n"));
+}
+
+// A connected pair whose first end is non-blocking with a small send buffer.
+struct SocketPair {
+  SocketPair() {
+    EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds.data()), 0);
+    const int small = 4096;
+    ::setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    ::fcntl(fds[0], F_SETFL, ::fcntl(fds[0], F_GETFL) | O_NONBLOCK);
+  }
+  ~SocketPair() {
+    ::close(fds[0]);
+    ::close(fds[1]);
+  }
+  SocketPair(const SocketPair&) = delete;
+  SocketPair& operator=(const SocketPair&) = delete;
+  std::array<int, 2> fds{-1, -1};
+};
+
+TEST(SendAllTest, SendsEverythingTheReaderTakes) {
+  SocketPair pair;
+  const std::string data(1000, 'x');
+  EXPECT_TRUE(
+      SendAll(pair.fds[0], data, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+  std::array<char, 2000> received{};
+  EXPECT_EQ(::recv(pair.fds[1], received.data(), received.size(), 0), 1000);
+}
+
+// The guarantee behind the server's "a stuck client delays others by at most
+// the deadline": a peer that never reads cannot hold SendAll past it.
+TEST(SendAllTest, GivesUpAtTheDeadlineWhenThePeerNeverReads) {
+  SocketPair pair;
+  const std::string data(8U << 20U, 'x');  // far more than both buffers hold
+  constexpr auto kDeadline = std::chrono::milliseconds(200);
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_FALSE(SendAll(pair.fds[0], data, start + kDeadline));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_GE(elapsed, kDeadline - std::chrono::milliseconds(5));
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+TEST(SendAllTest, FailsWithoutRaisingSigpipeWhenThePeerHasGone) {
+  SocketPair pair;
+  ::close(pair.fds[1]);
+  pair.fds[1] = ::open("/dev/null", O_RDONLY);  // keep the destructor's close valid
+  EXPECT_FALSE(
+      SendAll(pair.fds[0], "data", std::chrono::steady_clock::now() + std::chrono::seconds(1)));
 }
 
 }  // namespace

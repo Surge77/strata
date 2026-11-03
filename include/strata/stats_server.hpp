@@ -26,13 +26,15 @@ struct StatsServerOptions {
 //   GET /healthz   "ok", or 503 once the database refuses writes
 //
 // HEAD works on both. Requests are served one at a time on the server's own
-// thread, with a 2-second limit to receive each request, so a slow client
-// delays others by at most that. It is meant for an operator or a dashboard,
-// not for traffic.
+// thread, with a 2-second limit on each whole exchange, so a slow client
+// delays others by at most about that. It is meant for an operator or a
+// dashboard, not for traffic.
 class StatsServer {
  public:
-  // Starts serving `db`, which must outlive the server. If it is closed
-  // meanwhile, both endpoints answer 503.
+  // Starts serving `db`. The server calls `db` from its own thread, so the
+  // rule in db.hpp applies: `db` must not be closed, destroyed, reopened, or
+  // moved while the server runs. Stop() (or destroy) the server first. A
+  // `db` that was already closed when Start was called answers 503.
   [[nodiscard]] static Result<std::unique_ptr<StatsServer>> Start(
       const DB* db, const StatsServerOptions& options = {});
 

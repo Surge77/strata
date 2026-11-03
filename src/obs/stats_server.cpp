@@ -98,44 +98,13 @@ Result<SocketAddress> ParseAddress(const std::string& address, std::uint16_t por
   return Status::InvalidArgument("not an IPv4 or IPv6 address: " + address);
 }
 
-using Deadline = std::chrono::steady_clock::time_point;
+using http::Deadline;
+using http::WaitFor;
 
-// Waits until `fd` is ready for `events` or the deadline passes. True if ready.
-bool WaitFor(int fd, short events, Deadline deadline) {
-  while (true) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - std::chrono::steady_clock::now());
-    if (left.count() <= 0) {
-      return false;
-    }
-    pollfd ready{.fd = fd, .events = events, .revents = 0};
-    const int result = ::poll(&ready, 1, static_cast<int>(left.count()));
-    if (result < 0 && errno == EINTR) {
-      continue;
-    }
-    return result > 0;
-  }
-}
-
-// Writes all of `data` to a non-blocking socket, or gives up at the
-// deadline. The deadline covers the whole response: a client that reads a
-// few bytes at a time must not hold the server longer than that.
-// MSG_NOSIGNAL: a client that hangs up must not kill the process with SIGPIPE.
+// The response is sent whole or abandoned at the deadline; either way the
+// connection closes next, so the outcome needs no handling.
 void SendAll(int fd, std::string_view data, Deadline deadline) {
-  while (!data.empty()) {
-    const ssize_t sent = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
-    if (sent > 0) {
-      data.remove_prefix(static_cast<std::size_t>(sent));
-      continue;
-    }
-    if (sent < 0 && errno == EINTR) {
-      continue;
-    }
-    if (sent < 0 && errno == EAGAIN && WaitFor(fd, POLLOUT, deadline)) {
-      continue;
-    }
-    return;
-  }
+  static_cast<void>(http::SendAll(fd, data, deadline));
 }
 
 }  // namespace
@@ -171,9 +140,9 @@ class StatsServer::Impl {
       Fd client(::accept4(listener_.get(), nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK));
       if (client.get() >= 0) {
         Serve(client.get());
-      } else if (errno == EMFILE || errno == ENFILE) {
-        // Out of descriptors: the listener stays readable, so back off
-        // instead of spinning, while still answering Stop.
+      } else if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+        // Out of descriptors or memory: the listener stays readable, so back
+        // off instead of spinning, while still answering Stop.
         pollfd wake{.fd = wake_read_.get(), .events = POLLIN, .revents = 0};
         ::poll(&wake, 1, kAcceptBackoffMs);
       }

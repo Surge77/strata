@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -36,6 +37,18 @@ struct Request {
 // refuses other hosts, so a web page that rebinds its own DNS name to
 // 127.0.0.1 cannot read the endpoint from the browser.
 [[nodiscard]] bool IsLoopbackHost(std::string_view host);
+
+using Deadline = std::chrono::steady_clock::time_point;
+
+// Waits until `fd` is ready for poll `events` or the deadline passes. True if
+// ready. Retries on EINTR.
+[[nodiscard]] bool WaitFor(int fd, short events, Deadline deadline);
+
+// Writes all of `data` to a non-blocking socket, or gives up at the
+// deadline; true if everything was sent. The deadline covers the whole
+// write, so a client that reads a few bytes at a time cannot hold the caller
+// past it. Uses MSG_NOSIGNAL: a peer that hangs up must not raise SIGPIPE.
+[[nodiscard]] bool SendAll(int fd, std::string_view data, Deadline deadline);
 
 // A complete HTTP/1.1 response that closes the connection. HEAD requests get
 // the same headers with no body.
