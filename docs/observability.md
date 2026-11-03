@@ -9,6 +9,14 @@ What a running strata database tells you about itself, and how to read it:
   `stratactl serve <db>` runs one; `stratactl stats <db>` prints one snapshot.
 - **The info log** (`LOG` in the database directory) gets one `key=value` line per event.
 
+`stratactl stats` and `serve` open the database themselves, read-write, like any other
+process. That has three consequences. They cannot attach to a database another process
+has open (the `LOCK` file refuses them). Their counters start from their own Open, so
+`stats` mostly prints zeros and what recovery did. And opening is not inspection: it
+replays the write-ahead log, flushes it to a table, deletes old logs, and may start a
+compaction, so do not use them on a damaged database you want to examine as it is. To
+watch a running engine, start a `StatsServer` inside the process that owns it.
+
 Taking a snapshot does no I/O and holds the database mutex only long enough to copy a
 few numbers, so polling it once a second costs nothing measurable.
 
@@ -22,12 +30,12 @@ time between them (`unix_micros`). Gauges are current values.
 
 | Name | Counts |
 |---|---|
-| `get.calls` | `Get` calls that reached a lookup (not those refused for an oversized key or a closed database) |
+| `get.calls` | `Get` calls that reached a lookup (not those refused for an oversized key, a closed database, or a released or foreign snapshot) |
 | `get.found` | ...of which found a value |
 | `get.memtable_answers` | ...answered by the active or immutable memtable, found or deleted, without touching a table |
 | `get.table_reads` | tables a `Get` searched past the Bloom filter (each one a block lookup, cached or not) |
 | `get.filter_skips` | tables a `Get` skipped because the Bloom filter ruled the key out |
-| `write.calls` | `Put`, `Delete`, and `Write` calls with at least one operation |
+| `write.calls` | `Put`, `Delete`, and `Write` calls with at least one operation that succeeded (a refused or failed write is not counted) |
 | `write.groups` | log records written: one per commit group, so `write.calls / write.groups` is the group-commit factor |
 | `write.bytes` | encoded batch bytes accepted; the denominator of write amplification |
 | `write.syncs` | log fsyncs paid for synced groups |
@@ -58,11 +66,13 @@ Write amplification is `(flush.bytes + compaction.bytes_written) / write.bytes`.
 
 ### Latencies
 
-`get` and `write`, in microseconds, from the call to its return. `write` includes the
-time spent queued behind other writers and any stall, because that is what the caller
-waited. Each reports `count`, `mean`, `p50`, `p90`, `p99`, `p999`, and `max` since Open.
-Percentiles come from the same log-linear buckets as `Histogram` and are within 6.25% of
-the true value.
+`get` and `write`, in microseconds (fractional), from the call to its return. They cover
+the same calls as `get.calls` and `write.calls`, and their `count` is those counters.
+`write` includes the time spent queued behind other writers and any stall, because that
+is what the caller waited. Each reports `count`, `mean`, `p50`, `p90`, `p99`, `p999`, and
+`max` since Open. Samples are taken in nanoseconds, so a sub-microsecond memtable `Get`
+is not rounded to 0. Percentiles come from the same log-linear buckets as `Histogram`
+and are within 6.25% of the true value.
 
 ## Events
 
@@ -77,7 +87,7 @@ the true value.
 | `flush_finished` | INFO | `table`, `bytes`, `micros` |
 | `table_moved` | INFO | `table`, `level` (the destination) |
 | `compaction_finished` | INFO | `level`, `output_level`, `bytes_read`, `bytes_written`, `micros` |
-| `write_failed`, `flush_failed`, `compaction_failed` | ERROR | `log` or nothing, `error` |
+| `write_failed`, `log_rotation_failed`, `flush_failed`, `compaction_failed` | ERROR | `log` or nothing, `error`; each leaves the database refusing writes |
 | `db_closed` | INFO | none |
 
 Events recorded while `Open` runs are kept as `recovery_events` for the life of the
@@ -90,8 +100,8 @@ In the info log each event is one line after the usual timestamp, level, and thr
 2026-10-27T10:15:30.123456Z INFO  [4711] event=flush_finished table=12 bytes=40960 micros=812
 ```
 
-Text values are quoted when they contain a space, `=`, `"`, or a control character, so an
-event is always exactly one line and splits on spaces outside quotes.
+Text values are quoted when they are empty or contain a space, `=`, `"`, `\`, or a control
+character, so an event is always exactly one line and splits on spaces outside quotes.
 
 ## JSON schema
 
@@ -131,14 +141,20 @@ which a byte counter reaches after 9 petabytes.
 | `GET /healthz` | 200 `ok`; 503 once the database refuses writes (the body says why) |
 | `HEAD` of either | the same status and headers, no body |
 | any other path | 404 |
-| any other method | 405, with `Allow: GET, HEAD` |
+| any other uppercase method | 405, with `Allow: GET, HEAD` |
+| a method with lowercase letters or `-` (`get`, `M-SEARCH`) | 400: the parser accepts only `A`–`Z` |
 | HTTP/1.1 without `Host` | 400 (HTTP/1.0 may omit it) |
 
 It is deliberately small. Requests are served one at a time on one thread. One 2-second
 deadline covers the whole exchange, reading the request and sending the response, and the
-request head must fit in 8 KiB (else 408 or 431). A stuck or hostile client, including one
-that reads the response a byte at a time, therefore delays others by at most about 2
-seconds. Every response closes the connection.
+request head must fit in 8 KiB (else 408 or 431; the short 408 reply gets its own 2
+seconds). A stuck or hostile client, including one that reads the response a byte at a
+time, therefore delays others by at most about 2 seconds (4 for a request that times out).
+Every response closes the connection.
+
+**Lifetime.** The server calls the database from its own thread, so the usual rule
+applies: stop the server (`Stop()` or its destructor) before closing, destroying,
+reopening, or moving the `DB` it serves.
 
 **Security model.** The server only reads; nothing it serves can change the database.
 What it reveals is operational: counters, file numbers, the database path, and error
@@ -148,6 +164,8 @@ messages. Keys and values are never included.
 - On a loopback address (including `::1` and `::ffff:127.0.0.1`) it also refuses (403) any request whose `Host` header is not
   `localhost`, `127.0.0.1`, or `[::1]`. Without that check, a web page could rebind its
   own domain name to 127.0.0.1 and read the endpoint through the visitor's browser.
+  Binding another 127.x address works, but then no Host passes the check; use
+  `127.0.0.1`.
 - It sends no CORS headers, so a page on another origin cannot read a response.
 - Binding any other address (`--bind 0.0.0.0`) serves everyone who can reach the port,
   with no authentication and no TLS, and `stratactl serve` warns when it does. Do that
