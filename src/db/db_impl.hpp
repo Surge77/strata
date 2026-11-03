@@ -60,8 +60,9 @@ struct DBStats {
 struct HotMetrics {
   explicit HotMetrics(MetricsRegistry* registry);
 
-  // get.calls and write.calls are these histograms' counts, not counters of
-  // their own: one fewer atomic per call.
+  // write.calls is the write histogram's count, not a counter of its own:
+  // one fewer atomic per call. Gets are timed by sampling, so they keep one.
+  Counter& get_calls;
   Counter& get_found;
   Counter& get_memtable_answers;
   Counter& get_table_reads;

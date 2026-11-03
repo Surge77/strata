@@ -18,7 +18,8 @@ std::int64_t NowUnixMicros() {
 }  // namespace
 
 HotMetrics::HotMetrics(MetricsRegistry* registry)
-    : get_found(registry->AddCounter("get.found")),
+    : get_calls(registry->AddCounter("get.calls")),
+      get_found(registry->AddCounter("get.found")),
       get_memtable_answers(registry->AddCounter("get.memtable_answers")),
       get_table_reads(registry->AddCounter("get.table_reads")),
       get_filter_skips(registry->AddCounter("get.filter_skips")),
@@ -64,7 +65,6 @@ Result<Stats> DBImpl::CollectStats() {
   stats.counters = metrics_.CounterValues();
   stats.latencies = metrics_.LatencyValues();
   auto& counters = stats.counters;
-  counters["get.calls"] = stats.latencies.at("get").count;
   counters["write.calls"] = stats.latencies.at("write").count;
   counters["write.groups"] = engine.write_groups;
   counters["write.bytes"] = engine.user_bytes_written;

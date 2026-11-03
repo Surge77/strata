@@ -29,6 +29,9 @@ std::uint64_t MicrosSince(std::chrono::steady_clock::time_point start) {
   return Since<std::chrono::microseconds>(start);
 }
 
+// One Get in this many, per thread, is timed (see DBImpl::Get).
+constexpr std::uint32_t kGetTimingInterval = 16;
+
 // Latency histograms take nanoseconds (MetricsRegistry::AddLatency).
 std::uint64_t NanosSince(std::chrono::steady_clock::time_point start) {
   return Since<std::chrono::nanoseconds>(start);
@@ -532,15 +535,25 @@ std::size_t DBImpl::QueuedWritersForTest() {
 }
 
 Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
-  const auto start = std::chrono::steady_clock::now();
+  // Two clock reads cost about 50 ns, over 10% of a Get that misses every
+  // table through its Bloom filter (phase 12 A/B). Timing one call in
+  // kGetTimingInterval per thread keeps the percentiles unbiased at a
+  // sixteenth of that cost; the first call of each thread is timed.
+  thread_local std::uint32_t calls_on_this_thread = 0;
+  const bool timed = calls_on_this_thread++ % kGetTimingInterval == 0;
+  const auto start =
+      timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   Result<std::string> result = GetImpl(options, key);
   // A call refused before any lookup (oversized key, closed database,
-  // foreign snapshot) is not a read. The histogram's count is get.calls.
+  // foreign snapshot) is not a read.
   if (result.ok() || !result.status().IsInvalidArgument()) {
+    hot_.get_calls.Add();
     if (result.ok()) {
       hot_.get_found.Add();
     }
-    hot_.get_nanos.Add(NanosSince(start));
+    if (timed) {
+      hot_.get_nanos.Add(NanosSince(start));
+    }
   }
   return result;
 }

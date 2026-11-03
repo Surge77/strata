@@ -86,16 +86,17 @@ TEST_F(StatsTest, CountsGetsAndWritesWithTheirLatencies) {
   for (int i = 0; i < 10; ++i) {
     Put(Key(i), "v");
   }
-  for (int i = 0; i < 15; ++i) {
+  for (int i = 0; i < 32; ++i) {
     static_cast<void>(db_->Get(ReadOptions{}, Key(i)));
   }
   const Stats stats = Collect();
   EXPECT_EQ(stats.counters.at("write.calls"), 10U);
-  EXPECT_EQ(stats.counters.at("get.calls"), 15U);
+  EXPECT_EQ(stats.counters.at("get.calls"), 32U);
   EXPECT_EQ(stats.counters.at("get.found"), 10U);
   EXPECT_EQ(stats.counters.at("get.memtable_answers"), 10U);
   EXPECT_EQ(stats.latencies.at("write").count, 10U);
-  EXPECT_EQ(stats.latencies.at("get").count, 15U);
+  // One Get in 16 per thread is timed; 32 in a row on one thread hold exactly 2.
+  EXPECT_EQ(stats.latencies.at("get").count, 2U);
   EXPECT_LE(stats.latencies.at("get").p50, stats.latencies.at("get").p99);
   EXPECT_GT(stats.gauges.at("memtable.bytes"), 0U);
   EXPECT_EQ(stats.gauges.at("sequence.last"), 10U);
