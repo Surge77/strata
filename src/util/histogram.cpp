@@ -87,6 +87,24 @@ Histogram Histogram::FromBuckets(const std::array<std::uint64_t, kBucketCount>& 
   if (histogram.count_ == 0) {
     return histogram;
   }
+  // A concurrent snapshot can see a sample's bucket before its min or max
+  // (ConcurrentHistogram). The occupied buckets bound the real extremes, so
+  // an extreme that falls outside them is widened to the bucket's edge.
+  const auto occupied = [&](std::size_t bucket) { return buckets[bucket] != 0; };
+  std::size_t first = 0;
+  while (!occupied(first)) {
+    ++first;
+  }
+  std::size_t last = kBucketCount - 1;
+  while (!occupied(last)) {
+    --last;
+  }
+  if (min > BucketUpperBound(first) - 1) {
+    min = BucketLowerBound(first);
+  }
+  if (max < BucketLowerBound(last)) {
+    max = BucketUpperBound(last) - 1;
+  }
   histogram.min_ = min;
   histogram.max_ = max;
   histogram.mean_ = static_cast<double>(sum) / static_cast<double>(histogram.count_);

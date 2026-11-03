@@ -18,15 +18,13 @@ std::int64_t NowUnixMicros() {
 }  // namespace
 
 HotMetrics::HotMetrics(MetricsRegistry* registry)
-    : get_calls(registry->AddCounter("get.calls")),
-      get_found(registry->AddCounter("get.found")),
+    : get_found(registry->AddCounter("get.found")),
       get_memtable_answers(registry->AddCounter("get.memtable_answers")),
       get_table_reads(registry->AddCounter("get.table_reads")),
       get_filter_skips(registry->AddCounter("get.filter_skips")),
-      write_calls(registry->AddCounter("write.calls")),
       iterators(registry->AddCounter("iterator.created")),
-      get_micros(registry->AddLatency("get")),
-      write_micros(registry->AddLatency("write")) {}
+      get_nanos(registry->AddLatency("get")),
+      write_nanos(registry->AddLatency("write")) {}
 
 Result<Stats> DBImpl::CollectStats() {
   Stats stats;
@@ -52,7 +50,7 @@ Result<Stats> DBImpl::CollectStats() {
     stats.gauges["writers.queued"] = writers_.empty() ? 0 : writers_.size() - 1;
     stats.compaction = CompactionProgress{
         .running = compaction_running_,
-        .level = compaction_level_,
+        .level = compaction_running_ ? compaction_level_ : 0,
         .input_bytes = compaction_running_ ? compaction_input_bytes_ : 0,
         .bytes_written =
             compaction_running_ ? compaction_bytes_written_.load(std::memory_order_relaxed) : 0,
@@ -66,6 +64,8 @@ Result<Stats> DBImpl::CollectStats() {
   stats.counters = metrics_.CounterValues();
   stats.latencies = metrics_.LatencyValues();
   auto& counters = stats.counters;
+  counters["get.calls"] = stats.latencies.at("get").count;
+  counters["write.calls"] = stats.latencies.at("write").count;
   counters["write.groups"] = engine.write_groups;
   counters["write.bytes"] = engine.user_bytes_written;
   counters["write.syncs"] = engine.log_syncs;

@@ -60,15 +60,15 @@ struct DBStats {
 struct HotMetrics {
   explicit HotMetrics(MetricsRegistry* registry);
 
-  Counter& get_calls;
+  // get.calls and write.calls are these histograms' counts, not counters of
+  // their own: one fewer atomic per call.
   Counter& get_found;
   Counter& get_memtable_answers;
   Counter& get_table_reads;
   Counter& get_filter_skips;
-  Counter& write_calls;
   Counter& iterators;
-  ConcurrentHistogram& get_micros;
-  ConcurrentHistogram& write_micros;
+  ConcurrentHistogram& get_nanos;
+  ConcurrentHistogram& write_nanos;
 };
 
 // The engine behind strata::DB.

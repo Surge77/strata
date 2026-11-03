@@ -59,6 +59,7 @@ Status DBImpl::SwitchMemTable(std::unique_lock<std::mutex>* lock) {
   if (Status status = NewLogFile(lock); !status.ok()) {
     background_error_ = status;
     background_done_.notify_all();  // waiters re-check background_error_
+    events_.Record(LogLevel::kError, "log_rotation_failed", {Field("error", status.ToString())});
     return status;
   }
   imm_ = std::move(mem_);

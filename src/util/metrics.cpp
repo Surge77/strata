@@ -5,14 +5,7 @@
 namespace strata {
 namespace {
 
-// Each thread gets a fixed shard the first time it records anything, handed
-// out round-robin, so up to kShards threads never share one.
-std::size_t ThisThreadShard() noexcept {
-  static std::atomic<std::size_t> next{0};
-  thread_local const std::size_t shard =
-      next.fetch_add(1, std::memory_order_relaxed) % ConcurrentHistogram::kShards;
-  return shard;
-}
+constexpr double kNanosPerMicro = 1000.0;
 
 // Lowers `target` to `value` if that is smaller. The plain load first keeps
 // the common case -- not a new minimum -- free of read-modify-write traffic.
@@ -81,20 +74,20 @@ std::map<std::string, std::uint64_t> MetricsRegistry::CounterValues() const {
 std::map<std::string, LatencyStats> MetricsRegistry::LatencyValues() const {
   std::map<std::string, LatencyStats> values;
   for (const auto& [name, histogram] : latencies_) {
-    values.emplace(name, Summarize(histogram.Snapshot()));
+    values.emplace(name, Summarize(histogram.Snapshot(), kNanosPerMicro));
   }
   return values;
 }
 
-LatencyStats Summarize(const Histogram& histogram) {
+LatencyStats Summarize(const Histogram& histogram, double unit) {
   return LatencyStats{
       .count = histogram.Count(),
-      .mean = histogram.Mean(),
-      .p50 = histogram.Percentile(50),
-      .p90 = histogram.Percentile(90),
-      .p99 = histogram.Percentile(99),
-      .p999 = histogram.Percentile(99.9),
-      .max = histogram.Max(),
+      .mean = histogram.Mean() / unit,
+      .p50 = histogram.Percentile(50) / unit,
+      .p90 = histogram.Percentile(90) / unit,
+      .p99 = histogram.Percentile(99) / unit,
+      .p999 = histogram.Percentile(99.9) / unit,
+      .max = static_cast<double>(histogram.Max()) / unit,
   };
 }
 

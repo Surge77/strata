@@ -1,5 +1,7 @@
 #include "util/metrics.hpp"
 
+#include <array>
+#include <cstdint>
 #include <thread>
 #include <vector>
 
@@ -18,9 +20,27 @@ TEST(CounterTest, StartsAtZeroAndAdds) {
   EXPECT_EQ(counter.Value(), 42U);
 }
 
-TEST(CounterTest, OccupiesItsOwnCacheLine) {
+TEST(CounterTest, GivesEachShardItsOwnCacheLine) {
   EXPECT_EQ(alignof(Counter), kCacheLineSize);
-  EXPECT_EQ(sizeof(Counter), kCacheLineSize);
+  EXPECT_EQ(sizeof(Counter), kMetricShards * kCacheLineSize);
+}
+
+TEST(CounterTest, CountsEveryAddFromManyThreads) {
+  constexpr int kThreads = 12;  // more than kMetricShards, so shards are shared
+  constexpr std::uint64_t kPerThread = 20000;
+  Counter counter;
+  std::vector<std::thread> threads;
+  for (int thread = 0; thread < kThreads; ++thread) {
+    threads.emplace_back([&counter] {
+      for (std::uint64_t i = 0; i < kPerThread; ++i) {
+        counter.Add();
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(counter.Value(), kThreads * kPerThread);
 }
 
 TEST(ConcurrentHistogramTest, EmptySnapshotIsEmpty) {
@@ -87,8 +107,19 @@ TEST(MetricsRegistryTest, ReportsEveryMetricByName) {
   const auto latencies = registry.LatencyValues();
   ASSERT_EQ(latencies.size(), 1U);
   EXPECT_EQ(latencies.at("get").count, 2U);
-  EXPECT_DOUBLE_EQ(latencies.at("get").mean, 15.0);
-  EXPECT_EQ(latencies.at("get").max, 20U);
+}
+
+TEST(MetricsRegistryTest, RecordsNanosecondsAndReportsMicroseconds) {
+  MetricsRegistry registry;
+  ConcurrentHistogram& latency = registry.AddLatency("get");
+  // Sub-microsecond samples must not round to zero: a memtable Get is one.
+  latency.Add(300);
+  latency.Add(2700);
+  const LatencyStats stats = registry.LatencyValues().at("get");
+  EXPECT_EQ(stats.count, 2U);
+  EXPECT_DOUBLE_EQ(stats.mean, 1.5);
+  EXPECT_DOUBLE_EQ(stats.max, 2.7);
+  EXPECT_GT(stats.p50, 0.0);
 }
 
 TEST(MetricsRegistryTest, ReferencesSurviveLaterRegistrations) {
@@ -110,7 +141,32 @@ TEST(SummarizeTest, CopiesThePercentiles) {
   EXPECT_EQ(stats.count, 1000U);
   EXPECT_DOUBLE_EQ(stats.p50, histogram.Percentile(50));
   EXPECT_DOUBLE_EQ(stats.p999, histogram.Percentile(99.9));
-  EXPECT_EQ(stats.max, 1000U);
+  EXPECT_DOUBLE_EQ(stats.max, 1000.0);
+}
+
+TEST(SummarizeTest, DividesEveryFigureByTheUnit) {
+  Histogram histogram;
+  histogram.Add(1000);
+  histogram.Add(3000);
+  const LatencyStats stats = Summarize(histogram, 1000.0);
+  EXPECT_DOUBLE_EQ(stats.mean, 2.0);
+  EXPECT_DOUBLE_EQ(stats.max, 3.0);
+  EXPECT_DOUBLE_EQ(stats.p50, histogram.Percentile(50) / 1000.0);
+}
+
+// A snapshot taken while a shard's very first sample is in flight can see
+// the bucket before min and max are set. It must still report figures
+// inside the bucket, not min = UINT64_MAX and max = 0.
+TEST(HistogramFromBucketsTest, RepairsMinAndMaxTornByAConcurrentFirstSample) {
+  std::array<std::uint64_t, Histogram::kBucketCount> buckets{};
+  buckets[Histogram::BucketFor(500)] = 1;
+  const Histogram torn = Histogram::FromBuckets(buckets, UINT64_MAX, 0, 500);
+  EXPECT_LE(torn.Min(), 500U);
+  EXPECT_GE(torn.Max(), 500U);
+  EXPECT_LE(torn.Min(), torn.Max());
+  const double p50 = torn.Percentile(50);
+  EXPECT_GE(p50, static_cast<double>(torn.Min()));
+  EXPECT_LE(p50, static_cast<double>(torn.Max()));
 }
 
 }  // namespace

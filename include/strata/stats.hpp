@@ -18,7 +18,7 @@ struct LatencyStats {
   double p90 = 0.0;
   double p99 = 0.0;
   double p999 = 0.0;
-  std::uint64_t max = 0;
+  double max = 0.0;
 };
 
 // One level of the LSM tree.

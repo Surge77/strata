@@ -19,10 +19,19 @@ namespace {
 // Events kept for the stats API beyond those recorded during Open.
 constexpr std::size_t kRecentEvents = 256;
 
+template <typename Unit>
+std::uint64_t Since(std::chrono::steady_clock::time_point start) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<Unit>(std::chrono::steady_clock::now() - start).count());
+}
+
 std::uint64_t MicrosSince(std::chrono::steady_clock::time_point start) {
-  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                                        std::chrono::steady_clock::now() - start)
-                                        .count());
+  return Since<std::chrono::microseconds>(start);
+}
+
+// Latency histograms take nanoseconds (MetricsRegistry::AddLatency).
+std::uint64_t NanosSince(std::chrono::steady_clock::time_point start) {
+  return Since<std::chrono::nanoseconds>(start);
 }
 
 // Applies a batch's operations to the memtable with consecutive sequence
@@ -391,8 +400,11 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
   const auto start = std::chrono::steady_clock::now();
   Status status = WriteImpl(options, &batch);
-  hot_.write_calls.Add();
-  hot_.write_micros.Add(MicrosSince(start));
+  // Only accepted writes: a refused one is not part of the group-commit
+  // factor write.calls / write.groups. The histogram's count is write.calls.
+  if (status.ok()) {
+    hot_.write_nanos.Add(NanosSince(start));
+  }
   return status;
 }
 
@@ -523,13 +535,12 @@ Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
   const auto start = std::chrono::steady_clock::now();
   Result<std::string> result = GetImpl(options, key);
   // A call refused before any lookup (oversized key, closed database,
-  // foreign snapshot) is not a read.
+  // foreign snapshot) is not a read. The histogram's count is get.calls.
   if (result.ok() || !result.status().IsInvalidArgument()) {
-    hot_.get_calls.Add();
     if (result.ok()) {
       hot_.get_found.Add();
     }
-    hot_.get_micros.Add(MicrosSince(start));
+    hot_.get_nanos.Add(NanosSince(start));
   }
   return result;
 }
@@ -580,8 +591,13 @@ Result<std::string> DBImpl::GetImpl(const ReadOptions& options, Slice key) {
   }
   ReadCounters counters;
   const auto found = version->Get(lookup, &value, table_cache_.get(), &counters);
-  hot_.get_table_reads.Add(counters.table_reads);
-  hot_.get_filter_skips.Add(counters.filter_skips);
+  // Skipping zero adds saves an atomic read-modify-write per lookup.
+  if (counters.table_reads != 0) {
+    hot_.get_table_reads.Add(counters.table_reads);
+  }
+  if (counters.filter_skips != 0) {
+    hot_.get_filter_skips.Add(counters.filter_skips);
+  }
   STRATA_RETURN_IF_ERROR(found.status());
   if (*found == MemTable::LookupResult::kFound) {
     return value;

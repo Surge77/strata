@@ -5,12 +5,15 @@
 #include "strata/db.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
 
 #include "db/db_impl.hpp"
+#include "support/fault_injection_env.hpp"
 #include "support/file_util.hpp"
 #include "support/test_dir.hpp"
 
@@ -102,6 +105,73 @@ TEST_F(StatsTest, RejectedWritesAndEmptyBatchesAreNotCounted) {
   Open();
   EXPECT_TRUE(db_->Write(WriteOptions{}, WriteBatch{}).ok());
   EXPECT_EQ(Collect().counters.at("write.calls"), 0U);
+}
+
+// A failed write is not an accepted one: counting it would inflate
+// write.calls / write.groups, the group-commit factor.
+TEST_F(StatsTest, AFailedWriteStopsTheDatabaseAndIsNotCounted) {
+  test::FaultInjectionEnv env(Env::Default());
+  Options options;
+  options.env = &env;
+  Open(options);
+  env.SetSyncFailure(true, ".log");
+  WriteBatch batch;
+  batch.Put("a", "1");
+  EXPECT_FALSE(db_->Write(WriteOptions{.sync = true}, batch).ok());
+  EXPECT_FALSE(db_->Write(WriteOptions{}, batch).ok()) << "refused after the failure";
+  const Stats stats = Collect();
+  EXPECT_EQ(stats.counters.at("write.calls"), 0U);
+  EXPECT_EQ(stats.latencies.at("write").count, 0U);
+  EXPECT_FALSE(stats.background_error.empty());
+  const Event* failed = FindEvent(stats.recent_events, "write_failed");
+  ASSERT_NE(failed, nullptr);
+  EXPECT_EQ(failed->level, LogLevel::kError);
+  env.SetSyncFailure(false);
+  db_.reset();
+}
+
+TEST_F(StatsTest, RefusedGetsAreNotCounted) {
+  Open();
+  Put("a", "1");
+  const Snapshot* snapshot = db_->GetSnapshot();
+  ASSERT_TRUE(db_->ReleaseSnapshot(snapshot).ok());
+  EXPECT_TRUE(db_->Get(ReadOptions{.snapshot = snapshot}, "a").status().IsInvalidArgument());
+  const Stats stats = Collect();
+  EXPECT_EQ(stats.counters.at("get.calls"), 0U);
+  EXPECT_EQ(stats.latencies.at("get").count, 0U);
+}
+
+TEST_F(StatsTest, MemtableGetsReportANonZeroLatency) {
+  Open();
+  Put("a", "1");
+  for (int i = 0; i < 100; ++i) {
+    static_cast<void>(db_->Get(ReadOptions{}, "a"));
+  }
+  const LatencyStats get = Collect().latencies.at("get");
+  EXPECT_GT(get.mean, 0.0) << "sub-microsecond samples were truncated to zero";
+  EXPECT_GT(get.p50, 0.0);
+}
+
+// The memtable's arena is written by a synced write's leader with the DB
+// mutex released; the memtable.bytes gauge must be safe to read meanwhile
+// (TSan checks this).
+TEST_F(StatsTest, StatsCanBePolledDuringSyncedWrites) {
+  Open();
+  std::atomic<bool> done{false};
+  std::thread poller([&] {
+    while (!done.load()) {
+      static_cast<void>(db_->CollectStats());
+    }
+  });
+  WriteBatch batch;
+  for (int i = 0; i < 200; ++i) {
+    batch.Clear();
+    batch.Put(Key(i), std::string(512, 'v'));
+    EXPECT_TRUE(db_->Write(WriteOptions{.sync = true}, batch).ok());
+  }
+  done = true;
+  poller.join();
+  EXPECT_EQ(Collect().counters.at("write.calls"), 200U);
 }
 
 TEST_F(StatsTest, SnapshotsAndIteratorsAreCounted) {
