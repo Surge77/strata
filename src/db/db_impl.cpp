@@ -11,7 +11,9 @@
 #include "db/filename.hpp"
 #include "db/write_batch_internal.hpp"
 #include "log/log_reader.hpp"
+#include "table/compression.hpp"
 #include "table/merger.hpp"
+#include "table/table_builder.hpp"
 
 namespace strata {
 namespace {
@@ -137,6 +139,12 @@ Result<std::unique_ptr<DBImpl>> DBImpl::OpenForTest(const Options& options,
                                                     bool compactions_paused) {
   if (options.path.empty()) {
     return Status::InvalidArgument("Options::path is empty");
+  }
+  const auto compression = static_cast<table::CompressionType>(options.compression);
+  if (compression != table::CompressionType::kNone &&
+      table::CompressorFor(compression) == nullptr) {
+    return Status::NotSupported(std::string("this build leaves out ") +
+                                table::CompressionName(compression) + " compression");
   }
   // The constructor is private, so make_unique cannot reach it.
   std::unique_ptr<DBImpl> impl(new DBImpl(options));
@@ -345,8 +353,13 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   if (lock != nullptr) {
     lock->unlock();
   }
-  Status status = BuildTable(dbname_, env_, &internal_comparator_, options_.bloom_filter,
-                             table_cache_.get(), it.get(), &meta);
+  const table::TableOptions table_options{
+      .comparator = &internal_comparator_,
+      .use_filter = options_.bloom_filter,
+      .compression = static_cast<table::CompressionType>(options_.compression),
+      .compression_level = options_.compression_level,
+  };
+  Status status = BuildTable(dbname_, env_, table_options, table_cache_.get(), it.get(), &meta);
   if (lock != nullptr) {
     lock->lock();
   }

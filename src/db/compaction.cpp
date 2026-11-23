@@ -91,7 +91,10 @@ class OutputWriter {
     STRATA_ASSIGN_OR_RETURN(
         file_, options_.env->NewWritableFile(TableFileName(options_.dbname, current_.number)));
     builder_ = std::make_unique<table::TableBuilder>(
-        table::TableOptions{.comparator = options_.comparator, .use_filter = options_.use_filter},
+        table::TableOptions{.comparator = options_.comparator,
+                            .use_filter = options_.use_filter,
+                            .compression = options_.compression,
+                            .compression_level = options_.compression_level},
         file_.get());
     current_.smallest.assign(first_key);
     return Status::Ok();

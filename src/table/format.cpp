@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "table/compression.hpp"
 #include "util/coding.hpp"
 #include "util/crc32c.hpp"
 
@@ -62,7 +63,16 @@ Result<std::string> ReadBlock(const RandomAccessFile& file, std::uint64_t file_s
     return Status::Corruption("block checksum mismatch");
   }
   if (type != static_cast<std::uint8_t>(CompressionType::kNone)) {
-    return Status::Corruption("unknown block compression type");
+    const auto compression = static_cast<CompressionType>(type);
+    if (compression != CompressionType::kSnappy && compression != CompressionType::kZstd) {
+      return Status::Corruption("unknown block compression type");
+    }
+    const Compressor* compressor = CompressorFor(compression);
+    if (compressor == nullptr) {
+      return Status::NotSupported(std::string("block is compressed with ") +
+                                  CompressionName(compression) + ", which this build leaves out");
+    }
+    return compressor->Uncompress(Slice(data, length));
   }
 
   // Read() may return a Slice pointing somewhere other than the scratch buffer

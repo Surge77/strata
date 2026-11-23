@@ -14,6 +14,13 @@ class Snapshot;
 // How to open a database. Designed for designated initialisers:
 //
 //   strata::DB::Open({.path = "./data", .create_if_missing = true}, &db);
+// How SSTable blocks are compressed (Options::compression).
+enum class Compression : std::uint8_t {
+  kNone = 0,
+  kSnappy = 1,  // fast, modest savings
+  kZstd = 2,    // slower to write, smaller (Options::compression_level)
+};
+
 struct Options {
   // Directory holding the database. Created if missing (see below).
   std::string path;
@@ -39,6 +46,18 @@ struct Options {
   // lookup for a missing key usually skips that table without reading it.
   // Tables written either way stay readable whatever this is set to.
   bool bloom_filter = true;
+
+  // How blocks of new SSTables are compressed. A block is stored compressed
+  // only when that saves at least an eighth of it, so incompressible data
+  // costs a compression attempt but no read-side work. Changing this never
+  // affects tables already written: each block records its own encoding,
+  // so a database can hold a mix. Open fails with NotSupported if this build
+  // leaves the chosen algorithm out (STRATA_WITH_SNAPPY, STRATA_WITH_ZSTD).
+  Compression compression = Compression::kNone;
+
+  // zstd's level: 1 (fastest) to 22 (smallest), negative for faster still,
+  // 0 for zstd's default (3). Snappy has no levels and ignores it.
+  int compression_level = 0;
 
   // SSTables kept open at once. Each open table holds a file descriptor and
   // its index and filter in memory. Reads stay correct beyond this limit; the

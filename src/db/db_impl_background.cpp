@@ -167,6 +167,8 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
         .comparator = &internal_comparator_,
         .tables = table_cache_.get(),
         .use_filter = options_.bloom_filter,
+        .compression = static_cast<table::CompressionType>(options_.compression),
+        .compression_level = options_.compression_level,
         .max_file_size = options_.max_file_size,
         .smallest_snapshot = SmallestSnapshot(),
         .bytes_written_progress = &compaction_bytes_written_,
