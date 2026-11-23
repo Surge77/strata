@@ -13,7 +13,16 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 14 complete; phase 15 (release) is next.** SSTable blocks can be stored
+> **Status: `v1.0.0-rc.1`. All 16 phases are complete.** Every release gate is met on the
+> reference laptop except two, reported under what actually ran
+> ([ADR-0010](docs/decisions/ADR-0010-release-1-0-0-rc-1.md)): the benchmark suite has not yet
+> been measured at CV ≤ 5% on a quiet host, and the soak ran for one hour rather than 24. Zero
+> sanitizer findings under GCC and clang; 96.7% line coverage (100% on the log and the
+> manifest); every `fsync` proven load-bearing; each fuzz target clean for an hour. Try it with
+> [`scripts/demo.sh`](scripts/demo.sh); see what it does not do in
+> [docs/limitations.md](docs/limitations.md).
+>
+> SSTable blocks can be stored
 > with snappy or zstd (`Options::compression`, off by default); on half-compressible values
 > snappy cut the footprint by 34% for 14–18% of throughput, and zstd by 43% for 44–52%
 > (see [the phase 14 journal](docs/journal/phase-14-compression.md)). `stratactl serve` and
@@ -121,7 +130,7 @@ depend on, and it would make every benchmark number meaningless.
 | `docs/decisions/` | architecture decision records |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | measured results with full methodology |
 | [`docs/observability.md`](docs/observability.md) | every metric and event, the JSON schema, and the endpoint's security model |
-| `docs/limitations.md` | what this engine does not do *(phase 15)* |
+| [`docs/limitations.md`](docs/limitations.md) | what this engine does not do, and why |
 
 ## Non-goals
 
