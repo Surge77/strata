@@ -25,7 +25,9 @@ export function sameSession(previous, current) {
 // of just the samples taken in between. Buckets are [upper_bound_micros, count]
 // pairs, non-empty only. Returns null when the interval holds no samples.
 export function intervalLatency(previousLatency, currentLatency, percentiles = [50, 99]) {
-  if (!currentLatency?.buckets) return null;
+  // Without an earlier snapshot there is no interval, only the distribution
+  // since Open, which would be plotted as if it were the last second.
+  if (!previousLatency?.buckets || !currentLatency?.buckets) return null;
   const before = new Map((previousLatency?.buckets ?? []).map(([bound, count]) => [bound, count]));
   const delta = [];
   let total = 0;

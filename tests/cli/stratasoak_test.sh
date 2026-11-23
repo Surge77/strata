@@ -36,5 +36,12 @@ set +e
 code=$?
 set -e
 [[ $code -eq 2 ]] || fail "bad flag should exit 2, got $code"
+for flag in --keys=0 --keys=1000000000001 --value_size=1048577; do
+  set +e
+  "$SOAK" --db="$DIR/db" "$flag" 2>/dev/null
+  code=$?
+  set -e
+  [[ $code -eq 2 ]] || fail "$flag should exit 2, got $code"
+done
 
 echo "stratasoak CLI: ok"

@@ -37,6 +37,11 @@ constexpr int kExitOk = 0;
 constexpr int kExitFailed = 1;
 constexpr int kExitUsage = 2;
 constexpr std::uint64_t kMaxSeconds = 30ULL * 24 * 3600;
+// Keys are "k" and 12 digits (soak::KeyFor), so indexes must stay below 10^12.
+constexpr std::uint64_t kMaxKeys = 1'000'000'000'000ULL;
+// A value is built in each writer thread; an absurd size would throw there,
+// where nothing can catch it, so it is refused while parsing flags.
+constexpr std::size_t kMaxValueSize = 1 << 20;
 
 struct Args {
   std::string db;
@@ -71,8 +76,9 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   }
   if (name == "writers") return ParseNumber(value, &w.writers) && w.writers >= 0;
   if (name == "readers") return ParseNumber(value, &w.readers) && w.readers >= 0;
-  if (name == "keys") return ParseNumber(value, &w.keys) && w.keys > 0;
-  if (name == "value_size") return ParseNumber(value, &w.value_size);
+  if (name == "keys") return ParseNumber(value, &w.keys) && w.keys > 0 && w.keys <= kMaxKeys;
+  if (name == "value_size")
+    return ParseNumber(value, &w.value_size) && w.value_size <= kMaxValueSize;
   if (name == "sync_every") return ParseNumber(value, &w.sync_every);
   if (name == "delete_every") return ParseNumber(value, &w.delete_every);
   if (name == "scan_every") return ParseNumber(value, &w.scan_every);
@@ -182,6 +188,9 @@ int main(int argc, char** argv) {
   const auto ran =
       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start);
   PrintProgress(static_cast<std::uint64_t>(ran.count()), workload.totals(), db);
+  // The default dispositions come back before the server stops and the
+  // database closes, so a second Ctrl-C during that shutdown ends the process
+  // (as in stratactl serve) rather than being ignored.
   pthread_sigmask(SIG_UNBLOCK, &stop_signals, nullptr);
   if (server != nullptr) {
     server->Stop();

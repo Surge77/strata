@@ -49,11 +49,12 @@ test("interval latency uses only the samples taken between two snapshots", () =>
   // The cumulative distribution would have hidden the slow half: p50 = 1, p90 = 1.
 });
 
-test("interval latency is null when nothing was sampled, and whole without a baseline", () => {
+test("interval latency is null when nothing was sampled or there is no earlier snapshot", () => {
   const buckets = { buckets: [[2, 4]] };
   assert.equal(intervalLatency(buckets, buckets), null);
-  assert.equal(intervalLatency(undefined, buckets).count, 4);
+  assert.equal(intervalLatency(undefined, buckets), null, "the lifetime is not an interval");
   assert.equal(intervalLatency(buckets, {}), null);
+  assert.equal(intervalLatency({ buckets: [] }, buckets).count, 4);
 });
 
 test("a percentile is the first bucket bound reaching its share of samples", () => {

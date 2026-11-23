@@ -10,7 +10,9 @@ import {
 
 const STATS_URL = "/stats";
 const POLL_MS = 1000;
-const REQUEST_TIMEOUT_MS = 2000;
+// Longer than the server's 2-second per-connection deadline, so a poll queued
+// behind one idle connection (browsers open speculative ones) still completes.
+const REQUEST_TIMEOUT_MS = 4500;
 const WINDOW_SECONDS = 300;
 const HISTORY = WINDOW_SECONDS + 5;
 const MIB = 1024 * 1024;
@@ -120,18 +122,20 @@ function scoreLevel(score) {
 function renderLevels(levels) {
   const rows = (levels ?? []).map((level) => {
     const row = element("tr");
-    const fill = level.level === 0 ? level.compaction_score : level.bytes / (level.target_bytes || 1);
+    // Non-finite numbers arrive as JSON null; treat a missing score as 0.
+    const score = Number.isFinite(level.compaction_score) ? level.compaction_score : 0;
+    const fill = level.level === 0 ? score : level.bytes / (level.target_bytes || 1);
     const bar = element("div", "bar");
     const barFill = element("div", "bar-fill");
     barFill.style.width = `${Math.min(100, Math.max(0, fill * 100)).toFixed(1)}%`;
-    barFill.dataset.level = scoreLevel(level.compaction_score);
+    barFill.dataset.level = scoreLevel(score);
     bar.append(barFill);
     const barCell = element("td");
     barCell.append(bar);
-    const score = element("td", "score", level.compaction_score.toFixed(2));
-    score.dataset.level = scoreLevel(level.compaction_score);
+    const scoreCell = element("td", "score", score.toFixed(2));
+    scoreCell.dataset.level = scoreLevel(score);
     row.append(element("td", "", `L${level.level}`), element("td", "", String(level.files)),
-      element("td", "", formatBytes(level.bytes)), barCell, score);
+      element("td", "", formatBytes(level.bytes)), barCell, scoreCell);
     return row;
   });
   $("levels").replaceChildren(...rows);
@@ -202,7 +206,8 @@ function renderHealth() {
   const status = $("status");
   status.dataset.state = state.state;
   setText("status", state.text);
-  const message = latest?.background_error || (state.state === "stale" ? lastError : "");
+  const message =
+    latest?.background_error || (state.state === "stale" || !latest ? lastError : "");
   $("error").hidden = !message;
   setText("error", message);
 }
@@ -234,9 +239,17 @@ async function poll() {
     lastError = error instanceof Error ? error.message : String(error);
   } finally {
     clearTimeout(timer);
+    // Scheduled before rendering, so a page that fails to render one snapshot
+    // still polls for the next.
+    setTimeout(poll, POLL_MS);
   }
-  render();
-  setTimeout(poll, POLL_MS);
+  try {
+    render();
+  } catch (error) {
+    lastError = `render: ${error instanceof Error ? error.message : String(error)}`;
+    $("error").hidden = false;
+    setText("error", lastError);
+  }
 }
 
 window.addEventListener("resize", renderCharts);

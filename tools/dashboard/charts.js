@@ -80,7 +80,7 @@ export function drawChart(canvas, { lines, now, windowSeconds, format, unit = 1 
   context.textAlign = "center";
   context.textBaseline = "top";
   for (const offset of [windowSeconds, windowSeconds / 2, 0]) {
-    const label = offset === 0 ? "now" : `-${Math.round(offset / 60)}m`;
+    const label = offset === 0 ? "now" : `-${Number((offset / 60).toFixed(1))}m`;
     context.fillText(label, x(now - offset), PADDING.top + plotHeight + 6);
   }
 
@@ -92,6 +92,16 @@ export function drawChart(canvas, { lines, now, windowSeconds, format, unit = 1 
   context.lineJoin = "round";
   for (const line of lines) {
     context.strokeStyle = line.color;
+    context.fillStyle = line.color;
+    // A point with no neighbour on either side has no segment to draw, so it
+    // gets a dot; otherwise a sparse series could vanish.
+    line.points.forEach(([seconds, value], i) => {
+      const before = line.points[i - 1]?.[1] ?? null;
+      const after = line.points[i + 1]?.[1] ?? null;
+      if (value !== null && before === null && after === null) {
+        context.fillRect(x(seconds) - 1, y(value) - 1, 2, 2);
+      }
+    });
     context.beginPath();
     let drawing = false;
     for (const [seconds, value] of line.points) {
