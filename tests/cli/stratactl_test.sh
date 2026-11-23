@@ -71,6 +71,15 @@ printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3
 reply="$(cat <&3)"
 exec 3<&-
 [[ "$reply" == "HTTP/1.1 200 OK"* && "$reply" == *"ok" ]] || { kill "$pid"; fail "healthz: $reply"; }
+grep -q "^dashboard http://127.0.0.1:$port/\$" "$OUT" || { kill "$pid"; fail "serve did not print the dashboard"; }
+exec 3<>"/dev/tcp/127.0.0.1/$port"
+printf 'GET / HTTP/1.1
+Host: localhost
+
+' >&3
+reply="$(cat <&3)"
+exec 3<&-
+[[ "$reply" == "HTTP/1.1 200 OK"* && "$reply" == *'src="/dashboard.js"'* ]]   || { kill "$pid"; fail "dashboard page: ${reply:0:200}"; }
 kill -TERM "$pid"
 wait "$pid" || fail "serve did not exit cleanly on SIGTERM"
 set +e

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>strata dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script type="module" src="/dashboard.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">strata</span>
+    <span class="status" id="status" data-state="connecting">connecting</span>
+    <dl class="facts">
+      <div><dt>uptime</dt><dd id="uptime">–</dd></div>
+      <div><dt>sequence</dt><dd id="sequence">–</dd></div>
+      <div><dt>snapshots</dt><dd id="snapshots">–</dd></div>
+      <div><dt>last update</dt><dd id="updated">–</dd></div>
+    </dl>
+  </header>
+  <p class="banner" id="error" hidden></p>
+
+  <main class="grid">
+    <section class="stats" aria-label="Current rates">
+      <div class="stat"><h2>Gets / s</h2><output id="stat-get-rate">–</output></div>
+      <div class="stat"><h2>Writes / s</h2><output id="stat-write-rate">–</output></div>
+      <div class="stat"><h2>Get p99</h2><output id="stat-get-p99">–</output></div>
+      <div class="stat"><h2>Write p99</h2><output id="stat-write-p99">–</output></div>
+      <div class="stat"><h2>Write amplification</h2><output id="stat-write-amp">–</output></div>
+      <div class="stat"><h2>Block cache hits</h2><output id="stat-cache-hits">–</output></div>
+    </section>
+
+    <section class="panel wide">
+      <h2>Throughput</h2>
+      <ul class="legend" id="legend-throughput"></ul>
+      <canvas class="chart" id="chart-throughput" aria-label="Gets and writes per second"></canvas>
+    </section>
+    <section class="panel wide">
+      <h2>Latency per interval</h2>
+      <ul class="legend" id="legend-latency"></ul>
+      <canvas class="chart" id="chart-latency" aria-label="Get and write latency percentiles"></canvas>
+    </section>
+    <section class="panel wide">
+      <h2>Background I/O</h2>
+      <ul class="legend" id="legend-io"></ul>
+      <canvas class="chart" id="chart-io" aria-label="Flush and compaction bytes written per second"></canvas>
+    </section>
+
+    <section class="panel">
+      <h2>LSM levels</h2>
+      <table class="levels">
+        <thead><tr><th>Level</th><th>Files</th><th>Size</th><th class="bar-col">Fill of target</th><th>Score</th></tr></thead>
+        <tbody id="levels"></tbody>
+      </table>
+    </section>
+    <section class="panel">
+      <h2>Compaction</h2>
+      <p class="compaction-state" id="compaction-state">idle</p>
+      <div class="progress" aria-hidden="true"><div class="progress-fill" id="compaction-fill"></div></div>
+      <dl class="kv" id="compaction-detail"></dl>
+      <h2 class="sub">Memory and caches</h2>
+      <dl class="kv" id="gauges"></dl>
+    </section>
+
+    <section class="panel">
+      <h2>Recovery</h2>
+      <p class="hint">What Open did. Kept for the database's lifetime.</p>
+      <ol class="events" id="recovery-events"></ol>
+    </section>
+    <section class="panel">
+      <h2>Recent events</h2>
+      <ol class="events" id="recent-events"></ol>
+    </section>
+  </main>
+</body>
+</html>

@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "db/dbformat.hpp"
+#include "dashboard_files.hpp"
 #include "table/table.hpp"
 
 namespace {
@@ -39,8 +40,9 @@ void PrintUsage(std::ostream& out) {
       << "  delete <db> <key> [--sync]        Remove a key\n"
       << "  dump-sst <file>                   Print an SSTable's entries\n"
       << "  stats <db>                        Print the database's stats as JSON\n"
-      << "  serve <db> [--port N] [--bind A]  Serve /stats and /healthz over HTTP until\n"
-      << "                                    interrupted (default 127.0.0.1, a free port)\n"
+      << "  serve <db> [--port N] [--bind A]  Serve /stats, /healthz, and a dashboard at /\n"
+      << "                                    over HTTP until interrupted (default\n"
+      << "                                    127.0.0.1, a free port)\n"
       << "  version                           Print the library version\n"
       << "  help                              Print this message\n";
 }
@@ -180,13 +182,17 @@ int Serve(std::span<char*> args) {
     std::cerr << "stratactl: warning: serving on " << options.bind_address
               << " with no authentication or TLS (see docs/observability.md)\n";
   }
+  options.files = strata::dashboard::Files();
   auto server = strata::StatsServer::Start(&db, options);
   if (!server.ok()) {
     return Fail(server.status());
   }
   const bool v6 = options.bind_address.find(':') != std::string::npos;
-  std::cout << "serving http://" << (v6 ? "[" : "") << options.bind_address << (v6 ? "]" : "")
-            << ':' << (*server)->port() << "/stats" << std::endl;
+  const std::string origin = "http://" + std::string(v6 ? "[" : "") + options.bind_address +
+                             (v6 ? "]" : "") + ':' + std::to_string((*server)->port());
+  std::cout << "serving " << origin << "/stats
+"
+            << "dashboard " << origin << "/" << std::endl;
   int signal = 0;
   sigwait(&stop_signals, &signal);
   // A second Ctrl-C during the shutdown below (up to a few seconds) should
