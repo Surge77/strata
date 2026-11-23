@@ -68,6 +68,11 @@ if(STRATA_BUILD_TOOLS)
                    $<TARGET_FILE:stratasoak>)
   set_tests_properties(stratasoak_cli PROPERTIES LABELS integration)
 
+  # The soak's growth verdict, on made-up samples.
+  strata_add_test(soak_monitor_test SUITE unit
+                  SOURCES unit/soak_monitor_test.cpp ${PROJECT_SOURCE_DIR}/tools/stratasoak/monitor.cpp)
+  target_include_directories(soak_monitor_test PRIVATE ${PROJECT_SOURCE_DIR}/tools/stratasoak)
+
   # The release demo, run straight through, so it can never silently rot.
   add_test(NAME demo_script
            COMMAND ${CMAKE_COMMAND} -E env STRATA_BUILD_DIR=${CMAKE_BINARY_DIR}
