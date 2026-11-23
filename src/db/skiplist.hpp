@@ -41,6 +41,11 @@ class SkipList {
   static_assert(alignof(Key) <= alignof(std::max_align_t),
                 "Arena memory is only aligned to max_align_t");
 
+  // Declared before Iterator, whose data member names it: a nested class's
+  // member declarations are not a complete-class context, so clang rejects a
+  // use of Node that only the later definition would satisfy (GCC accepts it).
+  struct Node;
+
  public:
   // `arena` must outlive the list.
   SkipList(Comparator compare, Arena* arena)
@@ -129,7 +134,7 @@ class SkipList {
 
    private:
     const SkipList* list_;
-    typename SkipList::Node* node_ = nullptr;
+    Node* node_ = nullptr;
   };
 
  private:
