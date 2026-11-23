@@ -7,6 +7,8 @@ What a running strata database tells you about itself, and how to read it:
 - **`StatsToJson()`** renders it as JSON, the schema below.
 - **`StatsServer`** (`include/strata/stats_server.hpp`) serves that JSON over HTTP.
   `stratactl serve <db>` runs one; `stratactl stats <db>` prints one snapshot.
+- **The dashboard** (`tools/dashboard`) is a page the same server can serve at `/`. It reads
+  nothing but `/stats` (see [below](#the-dashboard)).
 - **The info log** (`LOG` in the database directory) gets one `key=value` line per event.
 
 `stratactl stats` and `serve` open the database themselves, read-write, like any other
@@ -154,6 +156,7 @@ which a byte counter reaches after 9 petabytes.
 | `GET /stats` | 200 with the JSON above; 503 if the database is closed |
 | `GET /healthz` | 200 `ok`; 503 once the database refuses writes (the body says why) |
 | `HEAD` of either | the same status and headers, no body |
+| `GET` or `HEAD` of a path in `StatsServerOptions::files` | 200 with that file, under the policy below |
 | any other path | 404 |
 | any other uppercase method | 405, with `Allow: GET, HEAD` |
 | a method with lowercase letters or `-` (`get`, `M-SEARCH`) | 400: the parser accepts only `A`–`Z` |
@@ -181,7 +184,58 @@ messages. Keys and values are never included.
   Binding another 127.x address works, but then no Host passes the check; use
   `127.0.0.1`.
 - It sends no CORS headers, so a page on another origin cannot read a response.
+- Static files (the dashboard) carry `Content-Security-Policy: default-src 'none';
+  script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none';
+  form-action 'none'; frame-ancestors 'none'`, plus `X-Frame-Options: DENY` and
+  `Referrer-Policy: no-referrer`. A page may run only this server's own script files, never
+  inline script, and may talk only to this server. Stats carry text an attacker can choose
+  (a file name in an event), so this is what keeps such text from ever running as code. The
+  dashboard also only ever inserts it as text. `Start` refuses a file whose path is not
+  absolute, holds `?` or `#`, would hide `/stats` or `/healthz`, or repeats another's, and a
+  content type that is empty or spans lines (which would inject a header).
 - Binding any other address (`--bind 0.0.0.0`) serves everyone who can reach the port,
   with no authentication and no TLS, and `stratactl serve` warns when it does. Do that
   only behind a proxy that provides both.
 - A 503 body carries the engine's error text, which can include the database path.
+
+## The dashboard
+
+`stratactl serve <db>` and `stratasoak --serve_port=N` serve a dashboard at `/` beside
+`/stats`. `stratasoak` runs a mixed workload while it serves, so it is the quickest way to
+watch the engine work:
+
+```bash
+stratasoak --db=/tmp/soak --duration_s=300 --serve_port=8080
+# open http://127.0.0.1:8080/
+```
+
+It polls `/stats` once a second and shows:
+
+| Panel | Source |
+|---|---|
+| Gets/s, writes/s | the change in `get.calls` and `write.calls` between snapshots |
+| Get and write p50/p99 | the change in each latency's `buckets` between snapshots: the last second, not since Open |
+| Write amplification | `(flush.bytes + compaction.bytes_written) / write.bytes` |
+| Block cache hits | `block_cache.hits / (hits + misses)` |
+| Background I/O | the rate of `flush.bytes` and `compaction.bytes_written` |
+| LSM levels | `levels`: files, size, fill of the level's target (L0: its compaction score), score, amber at 1 and red at 2 |
+| Compaction | `compaction`: which level, and `bytes_written / input_bytes` |
+| Memory and caches | the gauges |
+| Recovery | `recovery_events`: what Open did, kept for the database's lifetime |
+| Recent events | `recent_events`, newest first |
+| Status | healthy; refusing writes (with `background_error`); or no response for 5 seconds |
+
+Charts cover the last 5 minutes. A snapshot whose `uptime_micros` is lower than the last one
+means the database was reopened, and the history starts again.
+
+**It consumes only the JSON API.** The page requests its own files and `/stats`, nothing
+else: no other endpoint, no fonts or scripts from elsewhere, no analytics. A test enforces
+this (`tools/dashboard/dashboard.test.mjs`, run by ctest as `dashboard_js` when Node 18 or
+later is installed): every script may fetch only `/stats`, may not name an absolute URL or
+use another network API, and may import only its sibling modules. So anything the dashboard
+shows, any other client of `/stats` can compute in the same way, and `model.js` shows how.
+
+The files are compiled into the `strata_dashboard` library, so a binary serves them with
+nothing on disk. Another program that embeds strata can serve the same dashboard by passing
+`strata::dashboard::Files()` (`tools/dashboard/dashboard_files.hpp`) as
+`StatsServerOptions::files`.
