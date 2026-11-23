@@ -1,9 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(strata
-        VERSION 0.1.0
+        VERSION 1.0.0
         DESCRIPTION "An embeddable LSM-tree key-value storage engine"
         LANGUAGES C CXX)  # C for zstd
+
+# Semantic-versioning pre-release label; empty for a final release. v1.0.0
+# waits for the benchmark suite to be re-measured on a quiet host (ADR-0010).
+set(STRATA_VERSION_PRERELEASE "rc.1")
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   message(FATAL_ERROR
