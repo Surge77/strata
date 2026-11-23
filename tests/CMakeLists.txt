@@ -63,6 +63,11 @@ if(STRATA_BUILD_TOOLS)
                    $<TARGET_FILE:stratabench>)
   set_tests_properties(stratabench_cli PROPERTIES LABELS integration)
 
+  add_test(NAME stratasoak_cli
+           COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratasoak_test.sh
+                   $<TARGET_FILE:stratasoak>)
+  set_tests_properties(stratasoak_cli PROPERTIES LABELS integration)
+
   # The embedded copies must be the files in tools/dashboard.
   strata_add_test(dashboard_files_test SUITE unit SOURCES unit/dashboard_files_test.cpp)
   target_link_libraries(dashboard_files_test PRIVATE strata_dashboard)
