@@ -9,6 +9,7 @@
 #include "db/dbformat.hpp"
 #include "db/table_cache.hpp"
 #include "db/version_edit.hpp"
+#include "table/table_builder.hpp"
 
 namespace strata {
 
@@ -19,8 +20,9 @@ namespace strata {
 // through `tables` as a final check that it reads back.
 //
 // An empty source produces no file (meta->file_size stays 0). On any failure
-// the partial file is deleted. `use_filter` writes a user-key Bloom filter.
-Status BuildTable(const std::string& dbname, Env* env, const InternalKeyComparator* comparator,
-                  bool use_filter, TableCache* tables, Iterator* source, FileMetaData* meta);
+// the partial file is deleted. `table_options` chooses the comparator (the
+// internal key comparator), the Bloom filter, and compression.
+Status BuildTable(const std::string& dbname, Env* env, const table::TableOptions& table_options,
+                  TableCache* tables, Iterator* source, FileMetaData* meta);
 
 }  // namespace strata

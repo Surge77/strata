@@ -16,6 +16,7 @@
 #include "db/table_cache.hpp"
 #include "db/version_edit.hpp"
 #include "db/version_set.hpp"
+#include "table/format.hpp"
 
 namespace strata {
 
@@ -70,6 +71,8 @@ struct CompactionJobOptions {
   const InternalKeyComparator* comparator = nullptr;
   TableCache* tables = nullptr;
   bool use_filter = true;
+  table::CompressionType compression = table::CompressionType::kNone;
+  int compression_level = 0;
   std::size_t max_file_size = 0;
   // No snapshot can see anything older than this. With no snapshots, the
   // newest sequence number.

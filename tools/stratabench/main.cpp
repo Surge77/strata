@@ -19,6 +19,7 @@
 namespace {
 
 using namespace strata::bench;
+using strata::Compression;
 
 constexpr int kExitOk = 0;
 constexpr int kExitError = 1;
@@ -111,6 +112,13 @@ bool ParseSeconds(std::string_view text, std::chrono::nanoseconds* out) {
   return true;
 }
 
+std::optional<Compression> ParseCompression(std::string_view text) {
+  if (text == "none") return Compression::kNone;
+  if (text == "snappy") return Compression::kSnappy;
+  if (text == "zstd") return Compression::kZstd;
+  return std::nullopt;
+}
+
 // Applies one --name=value flag; false if the flag or its value is invalid.
 bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   BenchConfig& c = args->config;
@@ -121,6 +129,13 @@ bool ApplyFlag(std::string_view name, std::string_view value, Args* args) {
   if (name == "threads") return ParseNumber(value, &c.threads) && c.threads > 0;
   if (name == "min_round_s") return ParseSeconds(value, &c.min_round);
   if (name == "seed") return ParseNumber(value, &c.seed);
+  if (name == "compression") {
+    const auto parsed = ParseCompression(value);
+    c.db.compression = parsed.value_or(Compression::kNone);
+    return parsed.has_value();
+  }
+  if (name == "compression_level") return ParseNumber(value, &c.db.compression_level);
+  if (name == "compression_ratio") return ParsePositive(value, 1.0, &c.compression_ratio);
   if (name == "warmup") return ParseNumber(value, &c.protocol.warmup) && c.protocol.warmup >= 0;
   if (name == "rounds") return ParseNumber(value, &c.protocol.rounds) && c.protocol.rounds > 0;
   if (name == "json") return !(args->json_path = value).empty();
@@ -208,8 +223,10 @@ int main(int argc, char** argv) {
     if ((NeedsLoadedDb(name) || name == kLatency) && loaded == nullptr) {
       std::fprintf(stderr, "loading %llu keys\n", static_cast<unsigned long long>(args.config.num));
       loaded = std::make_unique<LoadedDb>(args.config.scratch / "loaded", args.config.num,
-                                          args.config.value_size, args.config.seed);
+                                          args.config.value_size, args.config.seed, args.config.db,
+                                          args.config.compression_ratio);
       report.db_shape = loaded->Shape();
+      report.db_table_bytes = loaded->Footprint();
     }
     PerfControl(args, "enable");
     if (name == kLatency) {

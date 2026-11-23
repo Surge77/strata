@@ -4,6 +4,7 @@
 
 #include "db/dbformat.hpp"
 #include "table/bloom_filter.hpp"
+#include "table/compression.hpp"
 #include "util/coding.hpp"
 #include "util/crc32c.hpp"
 
@@ -73,17 +74,20 @@ void TableBuilder::FlushDataBlock() {
 }
 
 Status TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
-  const Slice contents = block->Finish();
-  Status status = WriteRawBlock(contents, handle);
+  const Slice raw = block->Finish();
+  const CompressionType type =
+      ChooseBlockEncoding(options_.compression, options_.compression_level, raw, &compressed_);
+  Status status =
+      WriteRawBlock(type == CompressionType::kNone ? raw : Slice(compressed_), type, handle);
   block->Reset();
   return status;
 }
 
-Status TableBuilder::WriteRawBlock(Slice contents, BlockHandle* handle) {
+Status TableBuilder::WriteRawBlock(Slice contents, CompressionType type, BlockHandle* handle) {
   *handle = BlockHandle(offset_, contents.size());
   STRATA_RETURN_IF_ERROR(file_->Append(contents));
 
-  std::string trailer(1, static_cast<char>(CompressionType::kNone));
+  std::string trailer(1, static_cast<char>(type));
   std::uint32_t crc = crc32c::Value(contents);
   crc = crc32c::Extend(crc, trailer);  // the checksum covers the type byte too
   PutFixed32(&trailer, crc32c::Mask(crc));
@@ -103,7 +107,7 @@ Status TableBuilder::Finish() {
   if (options_.use_filter) {
     const std::string filter = BloomFilter::Build(filter_hashes_);
     BlockHandle filter_handle;
-    status_ = WriteRawBlock(filter, &filter_handle);
+    status_ = WriteRawBlock(filter, CompressionType::kNone, &filter_handle);
     STRATA_RETURN_IF_ERROR(status_);
     std::string handle_encoding;
     filter_handle.EncodeTo(&handle_encoding);

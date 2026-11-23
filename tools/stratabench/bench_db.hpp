@@ -29,11 +29,22 @@ Slice FormatKey(std::uint64_t number, KeyBuffer* buffer) noexcept;
 // same digits plus one byte. Lookups for it walk the same tables as a hit.
 Slice FormatMissingKey(std::uint64_t number, KeyBuffer* buffer) noexcept;
 
+// How benchmark databases are opened (--compression, --compression_level).
+struct DbSettings {
+  Compression compression = Compression::kNone;
+  int compression_level = 0;
+};
+
 // Value bytes for writes: windows into a fixed pseudo-random buffer, so values
 // are neither all one byte nor regenerated per write. Const and thread-safe.
+//
+// `compression_ratio` is how far the bytes can be squeezed, as in LevelDB's
+// db_bench: each 100-byte piece of the buffer is ratio * 100 random bytes
+// repeated. 1 (the default, and the only setting before phase 14) is all
+// random printable bytes, which neither snappy nor zstd can shrink much.
 class ValueSource {
  public:
-  ValueSource(std::size_t value_size, std::uint64_t seed);
+  ValueSource(std::size_t value_size, std::uint64_t seed, double compression_ratio = 1.0);
   // The value for write number `index`.
   [[nodiscard]] Slice At(std::uint64_t index) const noexcept;
 
@@ -47,8 +58,11 @@ class ValueSource {
 [[noreturn]] void Fail(const char* what, const Status& status);
 
 // Removes `path` and opens an empty database there.
-std::unique_ptr<DBImpl> OpenFresh(const std::filesystem::path& path);
-std::unique_ptr<DBImpl> OpenExisting(const std::filesystem::path& path);
+std::unique_ptr<DBImpl> OpenFresh(const std::filesystem::path& path, const DbSettings& settings);
+std::unique_ptr<DBImpl> OpenExisting(const std::filesystem::path& path, const DbSettings& settings);
+
+// Bytes in the SSTables under `path`: the on-disk footprint of the data.
+[[nodiscard]] std::uint64_t TableBytes(const std::filesystem::path& path);
 void CloseOrFail(DBImpl* db);
 
 // Asks the kernel to drop every file under `path` from the page cache
@@ -67,7 +81,7 @@ void WriteBackFilesystem(const std::filesystem::path& path);
 class LoadedDb {
  public:
   LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::size_t value_size,
-           std::uint64_t seed);
+           std::uint64_t seed, const DbSettings& settings, double compression_ratio);
 
   [[nodiscard]] DBImpl* db() const noexcept { return db_.get(); }
   [[nodiscard]] std::uint64_t keys() const noexcept { return keys_; }
@@ -82,10 +96,13 @@ class LoadedDb {
 
   // "5 49 2" -- tables per level, for the report.
   [[nodiscard]] std::string Shape() const;
+  // The loaded database's SSTable bytes, for the report.
+  [[nodiscard]] std::uint64_t Footprint() const { return TableBytes(pristine_); }
 
  private:
   void ResetWorkCopy();
 
+  const DbSettings settings_;
   std::filesystem::path pristine_;
   std::filesystem::path work_;
   std::uint64_t keys_;

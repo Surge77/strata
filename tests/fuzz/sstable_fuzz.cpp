@@ -16,14 +16,16 @@
 
 namespace {
 
-strata::table::TableOptions Options() {
-  return {.comparator = strata::BytewiseComparator(), .block_size = 64};
+strata::table::TableOptions Options(
+    strata::table::CompressionType compression = strata::table::CompressionType::kNone) {
+  return {.comparator = strata::BytewiseComparator(), .block_size = 64, .compression = compression};
 }
 
-std::string BuildTable(int entries) {
+std::string BuildTable(int entries, strata::table::CompressionType compression =
+                                        strata::table::CompressionType::kNone) {
   std::string contents;
   strata::test::StringSink sink(&contents);
-  strata::table::TableBuilder builder(Options(), &sink);
+  strata::table::TableBuilder builder(Options(compression), &sink);
   for (int index = 0; index < entries; ++index) {
     static_cast<void>(builder.Add("key" + std::to_string(1000 + index),
                                   std::string(static_cast<std::size_t>(index % 17), 'v')));
@@ -76,5 +78,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 }
 
 std::vector<std::string> StrataFuzzSeeds() {
-  return {BuildTable(0), BuildTable(3), BuildTable(40), BuildFilteredTable()};
+  // Compressed tables too, so mutations reach the decompressors through the
+  // table reader (behind the checksum) as well as directly
+  // (block_decompress_fuzz).
+  return {BuildTable(0),
+          BuildTable(3),
+          BuildTable(40),
+          BuildFilteredTable(),
+          BuildTable(40, strata::table::CompressionType::kSnappy),
+          BuildTable(40, strata::table::CompressionType::kZstd)};
 }

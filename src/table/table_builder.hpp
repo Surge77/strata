@@ -23,6 +23,12 @@ struct TableOptions {
   int block_restart_interval = 16;
   // Store a whole-table Bloom filter over the user part of internal keys.
   bool use_filter = false;
+  // Writer only. Data, index, and metaindex blocks are stored compressed with
+  // this when it saves at least an eighth (see ChooseBlockEncoding); the
+  // filter is stored raw. The reader needs no setting: each block names its
+  // own encoding.
+  CompressionType compression = CompressionType::kNone;
+  int compression_level = 0;
   // Reader only. Data blocks are looked up here before the file is read.
   // Null means no caching. Must outlive the table.
   BlockCache* block_cache = nullptr;
@@ -70,7 +76,7 @@ class TableBuilder {
   // index entry can be added once the next key is known.
   void FlushDataBlock();
   Status WriteBlock(BlockBuilder* block, BlockHandle* handle);
-  Status WriteRawBlock(Slice contents, BlockHandle* handle);
+  Status WriteRawBlock(Slice contents, CompressionType type, BlockHandle* handle);
 
   const TableOptions options_;
   WritableFile* const file_;
@@ -79,6 +85,7 @@ class TableBuilder {
   BlockBuilder data_block_;
   BlockBuilder index_block_;
   std::string last_key_;
+  std::string compressed_;  // scratch for one block's compressed form
   std::uint64_t num_entries_ = 0;
   std::vector<std::uint64_t> filter_hashes_;
   bool closed_ = false;

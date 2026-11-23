@@ -8,6 +8,19 @@ namespace strata::bench {
 namespace {
 
 constexpr double kPercent = 100.0;
+constexpr double kMiB = 1024.0 * 1024.0;
+
+const char* CompressionText(Compression compression) {
+  switch (compression) {
+    case Compression::kSnappy:
+      return "snappy";
+    case Compression::kZstd:
+      return "zstd";
+    case Compression::kNone:
+      break;
+  }
+  return "none";
+}
 constexpr unsigned char kFirstPrintableByte = 0x20;
 
 std::string Flag(const Summary& summary) {
@@ -111,8 +124,12 @@ void PrintReport(const Report& report, std::FILE* out) {
   std::fprintf(out, "protocol    warmup=%d rounds=%d, median and CV, stable at CV <= %.0f%%%s\n",
                config.protocol.warmup, config.protocol.rounds, kPercent * kMaxStableCv,
                Publishable(report) ? "" : "    NOT PUBLISHABLE");
+  std::fprintf(out, "storage     compression=%s level=%d value compression_ratio=%.2f\n",
+               CompressionText(config.db.compression), config.db.compression_level,
+               config.compression_ratio);
   if (!report.db_shape.empty()) {
-    std::fprintf(out, "loaded db   tables per level: %s\n", report.db_shape.c_str());
+    std::fprintf(out, "loaded db   tables per level: %s    %.1f MiB in tables\n",
+                 report.db_shape.c_str(), static_cast<double>(report.db_table_bytes) / kMiB);
   }
   if (!report.workloads.empty()) {
     std::fprintf(out, "\n%-12s %14s %-10s %7s %14s %14s\n", "workload", "median", "unit", "CV",
@@ -160,7 +177,13 @@ bool WriteJson(const Report& report, const std::filesystem::path& path) {
                      config.protocol.warmup, config.protocol.rounds, config.seed, kMaxStableCv)
       << std::format("\n  \"publishable\": {},\n  \"all_gated_stable\": {},", Publishable(report),
                      AllGatedStable(report))
-      << "\n  \"loaded_db_shape\": " << JsonString(report.db_shape) << ",\n  \"workloads\": [";
+      << "\n  \"loaded_db_shape\": " << JsonString(report.db_shape)
+      << std::format(R"(,
+  "loaded_db_table_bytes": {}, "compression": {}, "compression_level": {}, )"
+                     R"("compression_ratio": {},)",
+                     report.db_table_bytes, JsonString(CompressionText(config.db.compression)),
+                     config.db.compression_level, config.compression_ratio)
+      << "\n  \"workloads\": [";
   for (std::size_t index = 0; index < report.workloads.size(); ++index) {
     const WorkloadResult& w = report.workloads[index];
     out << (index == 0 ? "\n    " : ",\n    ")

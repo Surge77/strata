@@ -46,11 +46,11 @@ void PutOrFail(DBImpl* db, Slice key, Slice value, bool sync) {
 double Fill(const BenchConfig& config, bool random_keys, bool sync, int round) {
   const std::uint64_t total =
       sync ? std::max(config.num / kSyncDivisor, kMinSyncWrites) : config.num;
-  auto db = OpenFresh(config.scratch / "fill");
+  auto db = OpenFresh(config.scratch / "fill", config.db);
   // The previous round's files were deleted but may still be written back;
   // that must not land inside this round's fsyncs.
   WriteBackFilesystem(config.scratch);
-  const ValueSource values(config.value_size, config.seed);
+  const ValueSource values(config.value_size, config.seed, config.compression_ratio);
   std::vector<KeyChooser> choosers;
   for (int thread = 0; thread < std::max(config.threads, 1); ++thread) {
     choosers.emplace_back(KeyDistribution::kUniform, config.num, SeedFor(config, round, thread));

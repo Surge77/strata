@@ -8,7 +8,8 @@
 #
 #   ~/build/strata-asan/tests/fuzz/log_reader_fuzz --seconds 3600
 
-option(STRATA_FUZZ_LIBFUZZER "Link fuzz targets against libFuzzer (Clang)" OFF)
+# STRATA_FUZZ_LIBFUZZER is declared in cmake/Sanitizers.cmake, which also
+# instruments the library and its compressors for coverage.
 
 function(strata_add_fuzzer name)
   if(STRATA_FUZZ_LIBFUZZER)
@@ -32,3 +33,4 @@ endfunction()
 strata_add_fuzzer(log_reader_fuzz)
 strata_add_fuzzer(manifest_fuzz)
 strata_add_fuzzer(sstable_fuzz)
+strata_add_fuzzer(block_decompress_fuzz)

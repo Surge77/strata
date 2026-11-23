@@ -26,6 +26,7 @@ add_library(strata STATIC
     table/block.cpp
     table/block_builder.cpp
     table/bloom_filter.cpp
+    table/compression.cpp
     table/format.cpp
     table/merger.cpp
     table/table.cpp
@@ -56,7 +57,7 @@ target_compile_definitions(strata PRIVATE
     STRATA_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 
 target_link_libraries(strata
-    PRIVATE strata_warnings
+    PRIVATE strata_warnings strata_compression
     PUBLIC  strata_sanitizers)
 
 set_target_properties(strata PROPERTIES

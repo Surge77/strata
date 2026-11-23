@@ -19,6 +19,14 @@ elseif(NOT STRATA_SANITIZER STREQUAL "none")
   message(FATAL_ERROR "Unknown STRATA_SANITIZER: ${STRATA_SANITIZER}")
 endif()
 
+# With libFuzzer, the code under test must carry coverage instrumentation
+# too, or the fuzzer sees only its harness file and mutates blind. Only the
+# fuzz targets link libFuzzer itself (-fsanitize=fuzzer, tests/fuzz).
+option(STRATA_FUZZ_LIBFUZZER "Link fuzz targets against libFuzzer (Clang)" OFF)
+if(STRATA_FUZZ_LIBFUZZER)
+  list(APPEND _strata_san_flags -fsanitize=fuzzer-no-link)
+endif()
+
 if(_strata_san_flags)
   target_compile_options(strata_sanitizers INTERFACE ${_strata_san_flags} -g)
   target_link_options(strata_sanitizers INTERFACE ${_strata_san_flags})

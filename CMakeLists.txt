@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(strata
         VERSION 0.1.0
         DESCRIPTION "An embeddable LSM-tree key-value storage engine"
-        LANGUAGES CXX)
+        LANGUAGES C CXX)  # C for zstd
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   message(FATAL_ERROR
@@ -28,6 +28,7 @@ set(STRATA_SANITIZER "none" CACHE STRING "none|address|thread|undefined|address+
 
 include(cmake/CompilerWarnings.cmake)
 include(cmake/Sanitizers.cmake)
+include(cmake/Compression.cmake)
 
 add_subdirectory(src)
 

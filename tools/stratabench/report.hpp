@@ -14,7 +14,8 @@ namespace strata::bench {
 struct Report {
   EnvInfo env{};
   BenchConfig config{};
-  std::string db_shape{};  // tables per level of the loaded database, if built
+  std::string db_shape{};            // tables per level of the loaded database, if built
+  std::uint64_t db_table_bytes = 0;  // its SSTable bytes
   std::vector<WorkloadResult> workloads{};
   LatencyReport latency{};
 };

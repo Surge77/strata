@@ -53,17 +53,24 @@ class Footer {
   Status DecodeFrom(Slice input);
 };
 
+// The byte in every block trailer. The values are the on-disk format and
+// match strata::Compression.
 enum class CompressionType : std::uint8_t {
   kNone = 0,
+  kSnappy = 1,  // the raw snappy format
+  kZstd = 2,    // one zstd frame that records its content size
 };
 
 // compression type (1) + masked CRC-32C (4)
 inline constexpr std::size_t kBlockTrailerSize = 5;
 
 // Reads the block `handle` points to, verifies its trailer, and returns its
-// contents (without the trailer). A block whose checksum or compression type
-// is wrong, or which does not lie entirely inside a file of `file_size` bytes,
-// is Corruption: its bytes are never handed to a parser.
+// contents (without the trailer), uncompressed. A block whose checksum or
+// compression type is wrong, or which does not lie entirely inside a file of
+// `file_size` bytes, is Corruption: its bytes are never handed to a parser.
+// The checksum covers the stored (compressed) bytes, so it is checked before
+// anything is decompressed. A block compressed with an algorithm this build
+// leaves out is NotSupported.
 //
 // The size check happens before any allocation, so a corrupt handle claiming
 // a multi-gigabyte block costs nothing -- it cannot be turned into a
