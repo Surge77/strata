@@ -16,6 +16,7 @@
 // malformed length -- especially when built with AddressSanitizer.
 //
 // Usage: <target> [--iterations N] [--seconds S] [--seed X] [corpus files...]
+//        <target> --write_seeds DIR   (writes the seeds as files, for libFuzzer)
 
 #include "strata/env.hpp"
 
@@ -51,6 +52,25 @@ std::string ReadFile(const std::string& path) {
     contents.append(*chunk);
   }
   return contents;
+}
+
+// Writes each seed to <directory>/seed-<n>; 0 on success, 2 on failure.
+int WriteSeeds(const std::string& directory, const std::vector<std::string>& seeds) {
+  strata::Env* env = strata::Env::Default();
+  if (!env->CreateDir(directory).ok() && !env->FileExists(directory)) {
+    std::cerr << "fuzz driver: cannot create " << directory << '\n';
+    return 2;
+  }
+  for (std::size_t index = 0; index < seeds.size(); ++index) {
+    const std::string path = directory + "/seed-" + std::to_string(index);
+    auto file = env->NewWritableFile(path);
+    if (!file.ok() || !(*file)->Append(seeds[index]).ok() || !(*file)->Close().ok()) {
+      std::cerr << "fuzz driver: cannot write " << path << '\n';
+      return 2;
+    }
+  }
+  std::cout << "wrote " << seeds.size() << " seeds to " << directory << '\n';
+  return 0;
 }
 
 void RunOne(const std::string& input) {
@@ -126,6 +146,10 @@ int main(int argc, char** argv) {
       iterations = UINT64_MAX;
     } else if (arg == "--seed" && has_value) {
       seed = std::strtoull(args[++index], nullptr, 10);
+    } else if (arg == "--write_seeds" && has_value) {
+      // libFuzzer builds never call StrataFuzzSeeds, so a long run starts
+      // from these files instead of from nothing (scripts/fuzz.sh).
+      return WriteSeeds(args[++index], StrataFuzzSeeds());
     } else {
       pool.push_back(ReadFile(std::string(arg)));
     }
