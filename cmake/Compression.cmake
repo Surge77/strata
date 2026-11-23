@@ -12,6 +12,8 @@ option(STRATA_WITH_SNAPPY "Build snappy block compression" ON)
 option(STRATA_WITH_ZSTD   "Build zstd block compression"   ON)
 
 include(FetchContent)
+# Pinned commits never change, so after the first fetch nothing is contacted.
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
 
 if(STRATA_WITH_ZSTD)
   FetchContent_Declare(zstd
@@ -41,7 +43,8 @@ if(STRATA_WITH_SNAPPY)
   FetchContent_Declare(snappy
       GIT_REPOSITORY https://github.com/google/snappy.git
       GIT_TAG        9c28114a38866f6deeaa826db918293bc28ae410  # 1.3.1
-      GIT_SHALLOW    OFF)
+      GIT_SHALLOW    OFF
+      GIT_SUBMODULES "")  # its googletest and benchmark, which we do not build
   set(SNAPPY_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
   set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
   set(SNAPPY_INSTALL          OFF CACHE BOOL "" FORCE)

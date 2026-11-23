@@ -74,7 +74,9 @@ TEST(CompressionTest, ThisBuildIncludesSnappyAndZstd) {
 
 TEST(CompressionTest, EveryAlgorithmRoundTrips) {
   for (const CompressionType type : BuiltIn()) {
-    for (const std::size_t size : {0UL, 1UL, 4096UL, 300'000UL}) {
+    // Not 0: the writer never compresses an empty block, and a reader refuses
+    // one that claims to be (ClaimsOfOnePastTheLimitOrOfNothingAreCorruption).
+    for (const std::size_t size : {1UL, 4096UL, 300'000UL}) {
       const std::string raw = Compressible(size);
       std::string compressed;
       ASSERT_TRUE(CompressorFor(type)->Compress(raw, 0, &compressed));
@@ -94,6 +96,16 @@ TEST(CompressionTest, CompressibleBlocksAreStoredCompressed) {
   }
   std::string unused;
   EXPECT_EQ(ChooseBlockEncoding(CompressionType::kNone, 0, raw, &unused), CompressionType::kNone);
+}
+
+// The rule itself, at its edges: a block of 800 bytes must come down below
+// 700 (an eighth saved) to be stored compressed.
+TEST(CompressionTest, CompressingMustSaveAtLeastAnEighth) {
+  EXPECT_TRUE(WorthCompressing(800, 699));
+  EXPECT_FALSE(WorthCompressing(800, 700));
+  EXPECT_FALSE(WorthCompressing(800, 800));
+  EXPECT_FALSE(WorthCompressing(800, 900));
+  EXPECT_FALSE(WorthCompressing(0, 0));
 }
 
 TEST(CompressionTest, BlocksThatBarelyShrinkAreStoredRaw) {
@@ -118,6 +130,47 @@ TEST(CompressionTest, GarbageAndTruncatedInputIsCorruption) {
     compressed.resize(compressed.size() / 2);
     EXPECT_TRUE(compressor->Uncompress(compressed).status().IsCorruption())
         << CompressionName(type);
+  }
+}
+
+// The limit is inclusive: a block of exactly kMaxUncompressedBlock bytes,
+// which the writer may compress, must read back.
+TEST(CompressionTest, ABlockOfExactlyTheLimitRoundTrips) {
+  const std::string raw(kMaxUncompressedBlock, 'z');
+  for (const CompressionType type : BuiltIn()) {
+    std::string compressed;
+    ASSERT_EQ(ChooseBlockEncoding(type, 0, raw, &compressed), type) << CompressionName(type);
+    const Result<std::string> restored = CompressorFor(type)->Uncompress(compressed);
+    ASSERT_TRUE(restored.ok()) << CompressionName(type) << ": " << restored.status().ToString();
+    EXPECT_EQ(restored->size(), raw.size());
+  }
+  std::string unused;
+  const std::string one_over(kMaxUncompressedBlock + 1, 'z');
+  for (const CompressionType type : BuiltIn()) {
+    EXPECT_EQ(ChooseBlockEncoding(type, 0, one_over, &unused), CompressionType::kNone)
+        << "a block past the limit is stored raw";
+  }
+}
+
+TEST(CompressionTest, ClaimsOfOnePastTheLimitOrOfNothingAreCorruption) {
+  if (const Compressor* snappy = CompressorFor(CompressionType::kSnappy)) {
+    std::string one_over;
+    PutVarint32(&one_over, static_cast<std::uint32_t>(kMaxUncompressedBlock + 1));
+    one_over += "x";
+    EXPECT_TRUE(snappy->Uncompress(one_over).status().IsCorruption());
+    std::string empty;
+    PutVarint32(&empty, 0);
+    EXPECT_TRUE(snappy->Uncompress(empty).status().IsCorruption())
+        << "the writer never compresses an empty block";
+  }
+  if (const Compressor* zstd = CompressorFor(CompressionType::kZstd)) {
+    // A skippable frame (magic 0x184D2A50, a length, that many bytes) has
+    // a content size of 0.
+    std::string skippable;
+    PutFixed32(&skippable, 0x184D2A50U);
+    PutFixed32(&skippable, 4);
+    PutFixed32(&skippable, 0);
+    EXPECT_TRUE(zstd->Uncompress(skippable).status().IsCorruption());
   }
 }
 

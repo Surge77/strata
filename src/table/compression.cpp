@@ -35,8 +35,9 @@ class SnappyCompressor final : public Compressor {
     if (!snappy::GetUncompressedLength(input.data(), input.size(), &length)) {
       return Status::Corruption("snappy block has no valid length");
     }
-    if (length > kMaxUncompressedBlock) {
-      return Status::Corruption("snappy block claims to expand past the block limit");
+    // The writer never compresses an empty block.
+    if (length == 0 || length > kMaxUncompressedBlock) {
+      return Status::Corruption("snappy block claims an impossible length");
     }
     // RawUncompress writes exactly `length` bytes or fails; never the
     // string-resizing Uncompress, which would allocate whatever the header says.
@@ -50,13 +51,44 @@ class SnappyCompressor final : public Compressor {
 #endif
 
 #if STRATA_HAVE_ZSTD
-// One zstd frame that records its content size (ZSTD_compress always does).
+// One context per thread, kept for the thread's life: ZSTD_compress and
+// ZSTD_decompress would create and free one for every block. A context holds
+// no state between calls that could leak one block into the next.
+struct ZstdContexts {
+  ZSTD_CCtx* compress = ZSTD_createCCtx();
+  ZSTD_DCtx* decompress = ZSTD_createDCtx();
+  ZstdContexts() = default;
+  ZstdContexts(const ZstdContexts&) = delete;
+  ZstdContexts& operator=(const ZstdContexts&) = delete;
+  ZstdContexts(ZstdContexts&&) = delete;
+  ZstdContexts& operator=(ZstdContexts&&) = delete;
+  ~ZstdContexts() {
+    ZSTD_freeCCtx(compress);
+    ZSTD_freeDCtx(decompress);
+  }
+};
+
+ZstdContexts& ThreadContexts() {
+  thread_local ZstdContexts contexts;
+  return contexts;
+}
+ZSTD_CCtx* ThreadCompressContext() {
+  return ThreadContexts().compress;
+}
+ZSTD_DCtx* ThreadDecompressContext() {
+  return ThreadContexts().decompress;
+}
+
+// One zstd frame that records its content size (ZSTD_compressCCtx always does).
 class ZstdCompressor final : public Compressor {
  public:
   bool Compress(Slice input, int level, std::string* output) const override {
+    if (ThreadCompressContext() == nullptr) {
+      return false;  // out of memory: store the block raw
+    }
     output->resize(ZSTD_compressBound(input.size()));
-    const std::size_t length =
-        ZSTD_compress(output->data(), output->size(), input.data(), input.size(), level);
+    const std::size_t length = ZSTD_compressCCtx(ThreadCompressContext(), output->data(),
+                                                 output->size(), input.data(), input.size(), level);
     if (ZSTD_isError(length) != 0U) {
       return false;
     }
@@ -69,15 +101,19 @@ class ZstdCompressor final : public Compressor {
     if (claimed == ZSTD_CONTENTSIZE_ERROR || claimed == ZSTD_CONTENTSIZE_UNKNOWN) {
       return Status::Corruption("zstd block has no valid frame header");
     }
-    if (claimed > kMaxUncompressedBlock) {
-      return Status::Corruption("zstd block claims to expand past the block limit");
+    // 0 also covers a skippable frame, which the writer never produces.
+    if (claimed == 0 || claimed > kMaxUncompressedBlock) {
+      return Status::Corruption("zstd block claims an impossible length");
+    }
+    if (ThreadDecompressContext() == nullptr) {
+      return Status::IoError("out of memory for a zstd decompression context");
     }
     const auto length = static_cast<std::size_t>(claimed);
     std::string output(length, '\0');
     // Bounded by `length`: zstd never writes past the capacity it is given, and
     // a second frame or a lying header shows up as an error or a short result.
-    const std::size_t written =
-        ZSTD_decompress(output.data(), output.size(), input.data(), input.size());
+    const std::size_t written = ZSTD_decompressDCtx(ThreadDecompressContext(), output.data(),
+                                                    output.size(), input.data(), input.size());
     if (ZSTD_isError(written) != 0U || written != length) {
       return Status::Corruption("zstd block does not decompress");
     }
@@ -119,10 +155,11 @@ CompressionType ChooseBlockEncoding(CompressionType preferred, int level, Slice 
       !compressor->Compress(raw, level, compressed)) {
     return CompressionType::kNone;
   }
-  if (compressed->size() >= raw.size() - raw.size() / kMinSavingDivisor) {
-    return CompressionType::kNone;
-  }
-  return preferred;
+  return WorthCompressing(raw.size(), compressed->size()) ? preferred : CompressionType::kNone;
+}
+
+bool WorthCompressing(std::size_t raw_size, std::size_t compressed_size) noexcept {
+  return compressed_size < raw_size - raw_size / kMinSavingDivisor;
 }
 
 const char* CompressionName(CompressionType type) noexcept {

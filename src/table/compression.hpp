@@ -12,11 +12,17 @@ namespace strata::table {
 
 // A block longer than this is always stored uncompressed, and a compressed
 // block that says it expands past it is corrupt. Both formats carry the
-// uncompressed length in their own header, which a damaged file can make up;
-// this bound is what keeps it from making the reader allocate gigabytes. A
-// data block is about Options::block_size (4 KiB by default); only a block
-// holding one enormous value comes anywhere near it.
-inline constexpr std::size_t kMaxUncompressedBlock = 64 * 1024 * 1024;
+// uncompressed length in their own header, which a damaged or crafted file
+// can make up (and give a valid checksum), so this bounds what a few stored
+// bytes can make the reader allocate and zero on every read. A data block is
+// about Options::block_size (4 KiB by default); only a block holding a value
+// of megabytes reaches it, and such a block is simply stored raw.
+inline constexpr std::size_t kMaxUncompressedBlock = 4 * 1024 * 1024;
+
+// Whether storing `compressed_size` bytes instead of `raw_size` is worth a
+// decompression on every read: it must save at least an eighth (as in
+// LevelDB).
+[[nodiscard]] bool WorthCompressing(std::size_t raw_size, std::size_t compressed_size) noexcept;
 
 // One compression algorithm. Adding another takes a CompressionType value
 // (the byte in every block trailer), a subclass, and a case in CompressorFor.

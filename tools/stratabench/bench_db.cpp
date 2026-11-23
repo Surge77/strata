@@ -3,6 +3,7 @@
 #include "strata/write_batch.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
@@ -45,8 +46,10 @@ Slice FormatMissingKey(std::uint64_t number, KeyBuffer* buffer) noexcept {
 ValueSource::ValueSource(std::size_t value_size, std::uint64_t seed, double compression_ratio)
     : data_(std::max(kValuePoolBytes, 2 * value_size), '\0'), value_size_(value_size) {
   Random random(seed);
+  // Rounded, so a ratio of 0.29 means 29 random bytes, not 28.
   const auto random_bytes = std::max<std::size_t>(
-      1, static_cast<std::size_t>(compression_ratio * static_cast<double>(kPieceBytes)));
+      1,
+      static_cast<std::size_t>(std::lround(compression_ratio * static_cast<double>(kPieceBytes))));
   // At ratio 1 every byte is drawn in order, exactly as before this option.
   for (std::size_t piece = 0; piece < data_.size(); piece += kPieceBytes) {
     const std::size_t end = std::min(data_.size(), piece + kPieceBytes);

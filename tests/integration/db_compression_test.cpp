@@ -44,13 +44,14 @@ std::uint64_t TableBytes(const std::string& path) {
   return total;
 }
 
-// Writes kKeys values for `round` and closes, so they reach tables.
-void WriteRound(const std::string& path, Compression compression, int round) {
+// Writes kKeys values for `round` (keys `first` onward) and closes, so they
+// reach tables.
+void WriteRound(const std::string& path, Compression compression, int round, int first = 0) {
   DB db;
   ASSERT_TRUE(
       DB::Open({.path = path, .write_buffer_size = 64 * 1024, .compression = compression}, &db)
           .ok());
-  for (int i = 0; i < kKeys; ++i) {
+  for (int i = first; i < first + kKeys; ++i) {
     ASSERT_TRUE(db.Put(Key(i), Value(i, round)).ok());
   }
   ASSERT_TRUE(db.Close().ok());
@@ -91,15 +92,30 @@ TEST(DBCompressionTest, CompressedTablesAreSmallerAndReadBack) {
 }
 
 // Each block names its own encoding, so changing the setting never strands
-// tables written under the old one, through reopen and compaction alike.
+// tables written under the old one. Each round writes its own keys, so every
+// round's data must really be read back (nothing is shadowed by a later
+// round), whatever setting the database is reopened with. Compactions during
+// later rounds re-encode some earlier tables under the newer setting, so the
+// database ends up mixed. That each setting produces compressed tables at
+// all is CompressedTablesAreSmallerAndReadBack's job.
 TEST(DBCompressionTest, ADatabaseReadsTablesWrittenUnderEverySetting) {
   TestDir dir("compression-mixed");
   const std::string path = dir.File("db");
-  WriteRound(path, Compression::kZstd, 1);
-  WriteRound(path, Compression::kSnappy, 2);
-  WriteRound(path, Compression::kNone, 3);
-  ExpectRound(path, Compression::kZstd, 3);
-  ExpectRound(path, Compression::kNone, 3);
+  WriteRound(path, Compression::kZstd, 1, 0);
+  WriteRound(path, Compression::kSnappy, 2, kKeys);
+  WriteRound(path, Compression::kNone, 3, 2 * kKeys);
+  for (const Compression reopened : {Compression::kZstd, Compression::kNone}) {
+    DB db;
+    ASSERT_TRUE(DB::Open({.path = path, .compression = reopened}, &db).ok());
+    for (int round = 1; round <= 3; ++round) {
+      for (int i = (round - 1) * kKeys; i < round * kKeys; i += 7) {
+        const Result<std::string> value = db.Get(Key(i));
+        ASSERT_TRUE(value.ok()) << "round " << round << " " << Key(i);
+        EXPECT_EQ(*value, Value(i, round));
+      }
+    }
+    ASSERT_TRUE(db.Close().ok());
+  }
 }
 
 TEST(DBCompressionTest, ZstdLevelsTradeSpaceForTime) {
@@ -107,7 +123,10 @@ TEST(DBCompressionTest, ZstdLevelsTradeSpaceForTime) {
   TestDir small_dir("compression-zstd-19");
   for (const auto& [dir, level] : {std::pair{&fast_dir, 1}, std::pair{&small_dir, 19}}) {
     DB db;
+    // A small write buffer, so the records reach tables rather than staying
+    // in the log (where compression never applies).
     ASSERT_TRUE(DB::Open({.path = dir->File("db"),
+                          .write_buffer_size = 64 * 1024,
                           .compression = Compression::kZstd,
                           .compression_level = level},
                          &db)
@@ -117,7 +136,8 @@ TEST(DBCompressionTest, ZstdLevelsTradeSpaceForTime) {
     }
     ASSERT_TRUE(db.Close().ok());
   }
-  EXPECT_LE(TableBytes(small_dir.File("db")), TableBytes(fast_dir.File("db")));
+  EXPECT_LT(TableBytes(small_dir.File("db")), TableBytes(fast_dir.File("db")))
+      << "level 19 must be smaller than level 1 on repetitive records";
   ExpectRound(small_dir.File("db"), Compression::kNone, 1);
 }
 
