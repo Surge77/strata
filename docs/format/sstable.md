@@ -44,13 +44,39 @@ At most 20 bytes (`kMaxEncodedLength`).
 Every block, of every kind, is followed by:
 
 ```
-uint8    compression type  -- 0 = none (phase 14 adds 1 = snappy, 2 = zstd)
-fixed32  checksum          -- crc32c::Mask(crc32c(block contents ‖ compression type))
+uint8    compression type  -- 0 = none, 1 = snappy, 2 = zstd
+fixed32  checksum          -- crc32c::Mask(crc32c(stored contents ‖ compression type))
 ```
 
-The checksum covers the contents and the type byte, so a damaged type is caught. Every block is
-verified every time it is read from the file. A block that fails is reported as `Corruption`,
-never interpreted.
+The checksum covers the stored contents and the type byte, so a damaged type is caught. Every
+block is verified every time it is read from the file, before anything decompresses it. A
+block that fails is reported as `Corruption`, never interpreted.
+
+### Compressed blocks
+
+The "contents" of a compressed block are what the algorithm produced; the block handle's size
+is that compressed size. Uncompressed, they are exactly the block described below.
+
+| Type | Stored contents |
+|---|---|
+| 0 | the block itself |
+| 1 | the block in the raw snappy format (a varint32 length, then the snappy stream), not snappy's framing format |
+| 2 | one zstd frame whose header records its content size (a single `ZSTD_compress` call) |
+
+Rules:
+
+- **Per block.** Each block names its own encoding, so a table, and a database, can mix them.
+  Options::compression only decides what new blocks use; a reader needs no setting.
+- **Only when it pays.** A writer stores a block compressed only if that is smaller than seven
+  eighths of the block; otherwise it writes type 0. The filter block is always type 0.
+- **Bounded.** No block larger than 64 MiB (`kMaxUncompressedBlock`) is ever compressed, and a
+  compressed block whose header claims to expand past 64 MiB is `Corruption`, refused before
+  anything is allocated. Only a block holding a single enormous value approaches the limit,
+  and such a block is simply stored uncompressed.
+- **Exact.** Decompression must produce exactly the length the header claims (and, for zstd,
+  consume exactly one frame), or the block is `Corruption`.
+- **Unknown or absent.** A type byte other than 0, 1, or 2 is `Corruption`. A type this build
+  left out (`STRATA_WITH_SNAPPY=OFF`, `STRATA_WITH_ZSTD=OFF`) is `NotSupported`.
 
 ## Block contents
 

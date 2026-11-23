@@ -90,13 +90,18 @@ metrics, and a fault-injection layer used to prove the durability claims above.
 Linux only for v1.0. On Windows, build inside WSL2.
 
 ```bash
-sudo apt install -y cmake ninja-build g++-13 clang-18 libzstd-dev libsnappy-dev
+sudo apt install -y cmake ninja-build g++-13 clang-18 git
 
 scripts/build.sh              # RelWithDebInfo into ~/build/strata
 scripts/test.sh               # ctest
 scripts/build.sh --asan       # address + undefined sanitizers
 scripts/build.sh --tsan       # thread sanitizer
 ```
+
+The first configure fetches GoogleTest, zstd 1.5.7, and snappy 1.3.1 from GitHub, each
+pinned to an exact commit, so it needs network access once. `-DSTRATA_WITH_ZSTD=OFF` or
+`-DSTRATA_WITH_SNAPPY=OFF` leaves a compressor out; a database whose tables use it then
+fails to read them with `NotSupported`.
 
 The build tree and all test data live on ext4 (`$HOME`), never on a `/mnt/c` 9P mount:
 that filesystem does not provide the `fsync` semantics this engine's correctness tests
