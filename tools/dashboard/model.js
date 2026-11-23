@@ -128,6 +128,7 @@ export function formatCount(value) {
 
 export function formatMicros(micros) {
   if (micros === null || micros === undefined) return "–";
+  if (micros === 0) return "0";
   if (micros >= 1e6) return `${(micros / 1e6).toFixed(2)} s`;
   if (micros >= 1e3) return `${(micros / 1e3).toFixed(micros >= 1e5 ? 0 : 1)} ms`;
   return `${micros.toFixed(micros >= 100 ? 0 : micros >= 10 ? 1 : 2)} µs`;

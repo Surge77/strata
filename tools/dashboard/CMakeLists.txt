@@ -9,10 +9,12 @@ set(_strata_dashboard_files
     dashboard.css /dashboard.css css
     dashboard.js  /dashboard.js  js
     model.js      /model.js      js
-    charts.js     /charts.js     js)
+    charts.js     /charts.js     js
+    favicon.svg   /favicon.svg   svg)
 set(_type_html "text/html; charset=utf-8")
 set(_type_css "text/css; charset=utf-8")
 set(_type_js "text/javascript; charset=utf-8")
+set(_type_svg "image/svg+xml")
 # A raw string delimiter may be at most 16 characters.
 set(_delimiter "strata_dash")
 

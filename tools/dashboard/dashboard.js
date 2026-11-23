@@ -33,17 +33,24 @@ const charts = [
       { label: "writes/s", series: series.writeRate, colorVar: "--line-write" },
     ],
   },
+  // Gets take microseconds and synced writes milliseconds, so one shared
+  // axis would flatten the gets to zero.
   {
-    canvas: "chart-latency", legend: "legend-latency", format: formatMicros,
+    canvas: "chart-get-latency", legend: "legend-get-latency", format: formatMicros,
     lines: [
-      { label: "get p50", series: series.getP50, colorVar: "--line-get" },
-      { label: "get p99", series: series.getP99, colorVar: "--line-get-tail" },
-      { label: "write p50", series: series.writeP50, colorVar: "--line-write" },
-      { label: "write p99", series: series.writeP99, colorVar: "--line-write-tail" },
+      { label: "p50", series: series.getP50, colorVar: "--line-get" },
+      { label: "p99", series: series.getP99, colorVar: "--line-get-tail" },
     ],
   },
   {
-    canvas: "chart-io", legend: "legend-io", format: (v) => `${formatBytes(v)}/s`,
+    canvas: "chart-write-latency", legend: "legend-write-latency", format: formatMicros,
+    lines: [
+      { label: "p50", series: series.writeP50, colorVar: "--line-write" },
+      { label: "p99", series: series.writeP99, colorVar: "--line-write-tail" },
+    ],
+  },
+  {
+    canvas: "chart-io", legend: "legend-io", format: (v) => `${formatBytes(v)}/s`, unit: MIB,
     lines: [
       { label: "flush", series: series.flushRate, colorVar: "--line-flush" },
       { label: "compaction", series: series.compactionRate, colorVar: "--line-compaction" },
@@ -174,7 +181,9 @@ function renderCharts() {
   const now = (latest?.unix_micros ?? Date.now() * 1000) / 1e6;
   for (const chart of charts) {
     const lines = chart.lines.map((line) => ({ color: color(line.colorVar), points: line.series.points }));
-    drawChart($(chart.canvas), { lines, now, windowSeconds: WINDOW_SECONDS, format: chart.format });
+    drawChart($(chart.canvas), {
+      lines, now, windowSeconds: WINDOW_SECONDS, format: chart.format, unit: chart.unit ?? 1,
+    });
     const legend = chart.lines.map((line) => {
       const item = element("li");
       const swatch = element("span", "swatch");

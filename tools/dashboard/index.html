@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>strata dashboard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/dashboard.css">
   <script type="module" src="/dashboard.js"></script>
 </head>
@@ -37,9 +38,14 @@
       <canvas class="chart" id="chart-throughput" aria-label="Gets and writes per second"></canvas>
     </section>
     <section class="panel wide">
-      <h2>Latency per interval</h2>
-      <ul class="legend" id="legend-latency"></ul>
-      <canvas class="chart" id="chart-latency" aria-label="Get and write latency percentiles"></canvas>
+      <h2>Get latency, last second</h2>
+      <ul class="legend" id="legend-get-latency"></ul>
+      <canvas class="chart" id="chart-get-latency" aria-label="Get latency percentiles"></canvas>
+    </section>
+    <section class="panel wide">
+      <h2>Write latency, last second</h2>
+      <ul class="legend" id="legend-write-latency"></ul>
+      <canvas class="chart" id="chart-write-latency" aria-label="Write latency percentiles"></canvas>
     </section>
     <section class="panel wide">
       <h2>Background I/O</h2>

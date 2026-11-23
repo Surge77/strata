@@ -98,6 +98,7 @@ test("formatting", () => {
   assert.equal(formatBytes(200 * 1024 * 1024), "200 MiB");
   assert.equal(formatMicros(0.42), "0.42 µs");
   assert.equal(formatMicros(1500), "1.5 ms");
+  assert.equal(formatMicros(0), "0");
   assert.equal(formatDuration(3_725_000_000), "1h 2m");
   assert.equal(niceMax(0), 1);
   assert.equal(niceMax(730), 1000);
@@ -126,6 +127,6 @@ test("the dashboard requests nothing but /stats", () => {
   assert.match(dashboard, /const STATS_URL = "\/stats";/);
   const html = readFileSync(join(here, "index.html"), "utf8");
   for (const [, url] of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
-    assert.match(url, /^\/[a-z]+\.(js|css)$/, `index.html loads ${url}`);
+    assert.match(url, /^\/[a-z]+\.(js|css|svg)$/, `index.html loads ${url}`);
   }
 });

@@ -1,8 +1,9 @@
 // A minimal time-series chart on a canvas: a sliding window of lines, a
 // zero-based y axis with four gridlines, and nothing that needs a library.
 
-const PADDING = { top: 8, right: 12, bottom: 20, left: 56 };
+const PADDING = { top: 8, right: 12, bottom: 20, left: 40 };
 const GRIDLINES = 4;
+const LABEL_GAP = 6;
 
 function cssVar(element, name) {
   return getComputedStyle(element).getPropertyValue(name).trim();
@@ -34,13 +35,11 @@ function resize(canvas) {
 }
 
 // lines: [{ color, points: [[seconds, value|null], ...] }]. `now` is the right
-// edge in seconds; the window covers `windowSeconds` before it.
-export function drawChart(canvas, { lines, now, windowSeconds, format }) {
+// edge in seconds; the window covers `windowSeconds` before it. The axis top
+// is a round number of `unit`s (1 MiB for bytes reads better than 10^8).
+export function drawChart(canvas, { lines, now, windowSeconds, format, unit = 1 }) {
   const { context, width, height } = resize(canvas);
-  const plotWidth = width - PADDING.left - PADDING.right;
-  const plotHeight = height - PADDING.top - PADDING.bottom;
   context.clearRect(0, 0, width, height);
-  if (plotWidth <= 0 || plotHeight <= 0) return;
 
   let highest = 0;
   for (const line of lines) {
@@ -48,25 +47,36 @@ export function drawChart(canvas, { lines, now, windowSeconds, format }) {
       if (value !== null && value > highest) highest = value;
     }
   }
-  const top = niceMax(highest);
-  const x = (seconds) => PADDING.left + ((seconds - (now - windowSeconds)) / windowSeconds) * plotWidth;
+  const top = niceMax(highest / unit) * unit;
+  context.font = `11px ${cssVar(canvas, "--font-mono") || "monospace"}`;
+  const labels = [];
+  for (let i = 0; i <= GRIDLINES; i += 1) {
+    labels.push(format((top * i) / GRIDLINES));
+  }
+  // The plot starts after the widest axis label, so "100 MiB/s" is never cut.
+  const left = Math.max(
+    PADDING.left,
+    Math.ceil(Math.max(...labels.map((label) => context.measureText(label).width))) + LABEL_GAP * 2,
+  );
+  const plotWidth = width - left - PADDING.right;
+  const plotHeight = height - PADDING.top - PADDING.bottom;
+  if (plotWidth <= 0 || plotHeight <= 0) return;
+  const x = (seconds) => left + ((seconds - (now - windowSeconds)) / windowSeconds) * plotWidth;
   const y = (value) => PADDING.top + plotHeight - (value / top) * plotHeight;
 
-  context.font = `11px ${cssVar(canvas, "--font-mono") || "monospace"}`;
   context.lineWidth = 1;
   context.textBaseline = "middle";
   context.textAlign = "right";
-  for (let i = 0; i <= GRIDLINES; i += 1) {
-    const value = (top * i) / GRIDLINES;
-    const lineY = Math.round(y(value)) + 0.5;
+  labels.forEach((label, i) => {
+    const lineY = Math.round(y((top * i) / GRIDLINES)) + 0.5;
     context.strokeStyle = cssVar(canvas, "--grid");
     context.beginPath();
-    context.moveTo(PADDING.left, lineY);
+    context.moveTo(left, lineY);
     context.lineTo(width - PADDING.right, lineY);
     context.stroke();
     context.fillStyle = cssVar(canvas, "--text-faint");
-    context.fillText(format(value), PADDING.left - 6, lineY);
-  }
+    context.fillText(label, left - LABEL_GAP, lineY);
+  });
   context.textAlign = "center";
   context.textBaseline = "top";
   for (const offset of [windowSeconds, windowSeconds / 2, 0]) {
@@ -76,7 +86,7 @@ export function drawChart(canvas, { lines, now, windowSeconds, format }) {
 
   context.save();
   context.beginPath();
-  context.rect(PADDING.left, PADDING.top, plotWidth, plotHeight);
+  context.rect(left, PADDING.top, plotWidth, plotHeight);
   context.clip();
   context.lineWidth = 1.5;
   context.lineJoin = "round";

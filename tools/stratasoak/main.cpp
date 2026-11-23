@@ -20,11 +20,13 @@
 #include <chrono>
 #include <csignal>
 #include <ctime>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include "dashboard_files.hpp"
 #include "workload.hpp"
@@ -129,6 +131,10 @@ int main(int argc, char** argv) {
   sigaddset(&stop_signals, SIGTERM);
   pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
 
+  // Open creates only the last directory of the path, and a soak's database
+  // usually sits under a scratch directory that may not exist yet.
+  std::error_code ignored;
+  std::filesystem::create_directories(std::filesystem::path(args->db).parent_path(), ignored);
   strata::DB db;
   if (const strata::Status opened = strata::DB::Open({.path = args->db}, &db); !opened.ok()) {
     std::cerr << "stratasoak: " << opened.ToString() << '\n';

@@ -32,6 +32,7 @@ TEST(DashboardFilesTest, EmbedsEveryFileWithItsType) {
       {"/dashboard.js", "text/javascript; charset=utf-8"},
       {"/model.js", "text/javascript; charset=utf-8"},
       {"/charts.js", "text/javascript; charset=utf-8"},
+      {"/favicon.svg", "image/svg+xml"},
   };
   EXPECT_EQ(types, expected);
 }
@@ -43,6 +44,7 @@ TEST(DashboardFilesTest, EmbeddedBodiesMatchTheSourceFiles) {
       {"/dashboard.js", "dashboard.js"},
       {"/model.js", "model.js"},
       {"/charts.js", "charts.js"},
+      {"/favicon.svg", "favicon.svg"},
   };
   for (const StaticFile& file : dashboard::Files()) {
     const std::string source = ReadSource(sources.at(file.path));

@@ -10,7 +10,7 @@ trap 'rm -rf "$DIR"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 OUT="$DIR/soak.out"
-"$SOAK" --db="$DIR/db" --duration_s=4 --progress_s=1 --serve_port=0 --keys=2000 \
+"$SOAK" --db="$DIR/nested/db" --duration_s=4 --progress_s=1 --serve_port=0 --keys=2000 \
     --writers=2 --readers=2 >"$OUT" 2>"$DIR/soak.err" &
 pid=$!
 for _ in $(seq 50); do
