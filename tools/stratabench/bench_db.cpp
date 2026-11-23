@@ -23,6 +23,8 @@ constexpr char kMissingSuffix = '.';
 constexpr std::size_t kValuePoolBytes = 1 << 20;
 constexpr char kFirstPrintable = ' ';
 constexpr std::uint64_t kPrintableCount = 95;
+// The unit of compressibility, as in db_bench.
+constexpr std::size_t kPieceBytes = 100;
 
 }  // namespace
 
@@ -40,11 +42,19 @@ Slice FormatMissingKey(std::uint64_t number, KeyBuffer* buffer) noexcept {
   return {buffer->bytes, kKeySize + 1};
 }
 
-ValueSource::ValueSource(std::size_t value_size, std::uint64_t seed)
+ValueSource::ValueSource(std::size_t value_size, std::uint64_t seed, double compression_ratio)
     : data_(std::max(kValuePoolBytes, 2 * value_size), '\0'), value_size_(value_size) {
   Random random(seed);
-  for (char& byte : data_) {
-    byte = static_cast<char>(kFirstPrintable + random.Uniform(kPrintableCount));
+  const auto random_bytes = std::max<std::size_t>(
+      1, static_cast<std::size_t>(compression_ratio * static_cast<double>(kPieceBytes)));
+  // At ratio 1 every byte is drawn in order, exactly as before this option.
+  for (std::size_t piece = 0; piece < data_.size(); piece += kPieceBytes) {
+    const std::size_t end = std::min(data_.size(), piece + kPieceBytes);
+    for (std::size_t i = piece; i < end; ++i) {
+      data_[i] = i - piece < random_bytes
+                     ? static_cast<char>(kFirstPrintable + random.Uniform(kPrintableCount))
+                     : data_[piece + (i - piece) % random_bytes];
+    }
   }
 }
 
@@ -61,17 +71,30 @@ void Fail(const char* what, const Status& status) {
   std::exit(1);
 }
 
-std::unique_ptr<DBImpl> OpenExisting(const std::filesystem::path& path) {
-  auto opened = DBImpl::Open({.path = path.string()});
+std::unique_ptr<DBImpl> OpenExisting(const std::filesystem::path& path,
+                                     const DbSettings& settings) {
+  auto opened = DBImpl::Open({.path = path.string(),
+                              .compression = settings.compression,
+                              .compression_level = settings.compression_level});
   if (!opened.ok()) {
     Fail("open", opened.status());
   }
   return std::move(*opened);
 }
 
-std::unique_ptr<DBImpl> OpenFresh(const std::filesystem::path& path) {
+std::unique_ptr<DBImpl> OpenFresh(const std::filesystem::path& path, const DbSettings& settings) {
   std::filesystem::remove_all(path);
-  return OpenExisting(path);
+  return OpenExisting(path, settings);
+}
+
+std::uint64_t TableBytes(const std::filesystem::path& path) {
+  std::uint64_t total = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(path)) {
+    if (entry.path().extension() == ".sst") {
+      total += entry.file_size();
+    }
+  }
+  return total;
 }
 
 void CloseOrFail(DBImpl* db) {
@@ -112,8 +135,8 @@ void WriteBackFilesystem(const std::filesystem::path& path) {
 }
 
 LoadedDb::LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::size_t value_size,
-                   std::uint64_t seed)
-    : pristine_(path / "pristine"), work_(path / "work"), keys_(keys) {
+                   std::uint64_t seed, const DbSettings& settings, double compression_ratio)
+    : settings_(settings), pristine_(path / "pristine"), work_(path / "work"), keys_(keys) {
   std::vector<std::uint64_t> order(keys);
   std::iota(order.begin(), order.end(), std::uint64_t{0});
   Random random(seed);
@@ -123,8 +146,8 @@ LoadedDb::LoadedDb(const std::filesystem::path& path, std::uint64_t keys, std::s
   {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);  // Open creates only the leaf
-    auto db = OpenFresh(pristine_);
-    ValueSource values(value_size, seed);
+    auto db = OpenFresh(pristine_, settings_);
+    ValueSource values(value_size, seed, compression_ratio);
     KeyBuffer key;
     for (const std::uint64_t number : order) {
       WriteBatch batch;
@@ -150,7 +173,7 @@ void LoadedDb::ResetWorkCopy() {
   // Left alone, they would be written back during the timed round -- and on
   // ext4 (data=ordered) the round's first fsync would wait for all of them.
   WriteBackFilesystem(work_);
-  db_ = OpenExisting(work_);
+  db_ = OpenExisting(work_, settings_);
   db_->WaitForCompactionsForTest();
 }
 
@@ -165,7 +188,7 @@ void LoadedDb::PrepareRound(bool cold, bool writes) {
   CloseOrFail(db_.get());
   db_.reset();
   EvictFromPageCache(work_);
-  db_ = OpenExisting(work_);
+  db_ = OpenExisting(work_, settings_);
   db_->WaitForCompactionsForTest();
 }
 

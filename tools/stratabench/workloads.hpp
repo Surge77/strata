@@ -24,6 +24,8 @@ struct BenchConfig {
   // round of a fraction of a second is swung by any brief host interruption.
   std::chrono::nanoseconds min_round = std::chrono::seconds(3);
   bool cold = false;
+  DbSettings db;
+  double compression_ratio = 1.0;  // see ValueSource
   Protocol protocol;
   std::uint64_t seed = 20261011;
 };
