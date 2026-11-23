@@ -13,7 +13,10 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 13 complete; phase 14 (compression) is next.** `stratactl serve` and
+> **Status: Phase 14 complete; phase 15 (release) is next.** SSTable blocks can be stored
+> with snappy or zstd (`Options::compression`, off by default); on half-compressible values
+> snappy cut the footprint by 34% for 14–18% of throughput, and zstd by 43% for 44–52%
+> (see [the phase 14 journal](docs/journal/phase-14-compression.md)). `stratactl serve` and
 > `stratasoak --serve_port` serve a live dashboard (LSM levels, compaction progress, latency
 > charts, recovery events) built only on the JSON API. A running database reports
 > counters, gauges, latency percentiles, its LSM levels, compaction progress, and recovery
