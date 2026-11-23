@@ -1,6 +1,7 @@
 #include "util/metrics.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <latch>
@@ -25,7 +26,7 @@ TEST(CounterTest, StartsAtZeroAndAdds) {
 
 TEST(CounterTest, GivesEachShardItsOwnCacheLine) {
   EXPECT_EQ(alignof(Counter), kCacheLineSize);
-  EXPECT_EQ(sizeof(Counter), (kMetricShards + 1) * kCacheLineSize);
+  EXPECT_EQ(sizeof(Counter), 2 * kMetricShards * kCacheLineSize);
 }
 
 TEST(CounterTest, NeverGivesTwoLiveThreadsTheSameExclusiveSlot) {
@@ -78,15 +79,32 @@ TEST(CounterTest, FreesASlotWhenItsThreadExits) {
   }
 }
 
-TEST(CounterTest, KeepsEveryAddWhenSlotsPassBetweenThreads) {
-  constexpr int kRounds = 50;
-  constexpr int kThreads = 12;  // more than kMetricShards, so some share a slot
-  constexpr std::uint64_t kPerThread = 1000;
+TEST(CounterTest, KeepsEveryAddWhileSlotsPassBetweenThreadsUnderAReader) {
+  constexpr int kRounds = 20;
+  // Twice the exclusive slots, so half the threads add through shared ones.
+  constexpr std::size_t kThreads = 2 * kMetricShards;
+  constexpr std::uint64_t kPerThread = 20'000;
   Counter counter;
+  std::atomic<bool> done{false};
+  std::atomic<bool> went_backwards{false};
+  std::thread reader([&] {
+    std::uint64_t last = 0;
+    while (!done.load(std::memory_order_relaxed)) {
+      const std::uint64_t now = counter.Value();
+      if (now < last) {
+        went_backwards = true;
+      }
+      last = now;
+    }
+  });
   for (int round = 0; round < kRounds; ++round) {
+    // Released together, so every round's threads are alive at once and the
+    // slots freed by the previous round are contended.
+    std::latch start(kThreads);
     std::vector<std::thread> threads;
-    for (int thread = 0; thread < kThreads; ++thread) {
-      threads.emplace_back([&counter] {
+    for (std::size_t thread = 0; thread < kThreads; ++thread) {
+      threads.emplace_back([&counter, &start] {
+        start.arrive_and_wait();
         for (std::uint64_t i = 0; i < kPerThread; ++i) {
           counter.Add();
         }
@@ -96,7 +114,47 @@ TEST(CounterTest, KeepsEveryAddWhenSlotsPassBetweenThreads) {
       thread.join();
     }
   }
+  done = true;
+  reader.join();
+  EXPECT_FALSE(went_backwards) << "a reader saw the total decrease";
   EXPECT_EQ(counter.Value(), kRounds * kThreads * kPerThread);
+}
+
+// Destroyed after the slot's release object, because it was constructed
+// before the thread's first Add (thread_locals die in reverse order).
+struct LateAdder {
+  Counter* counter = nullptr;
+  std::atomic<std::size_t>* slot_seen = nullptr;
+  LateAdder() = default;
+  LateAdder(const LateAdder&) = delete;
+  LateAdder& operator=(const LateAdder&) = delete;
+  LateAdder(LateAdder&&) = delete;
+  LateAdder& operator=(LateAdder&&) = delete;
+  ~LateAdder() {
+    if (counter != nullptr) {
+      slot_seen->store(ThisThreadCounterSlot());
+      counter->Add(5);
+    }
+  }
+};
+
+TEST(CounterTest, AnAddAfterTheSlotIsReleasedGoesToASharedSlotAndCounts) {
+  Counter counter;
+  std::atomic<std::size_t> slot_seen{0};
+  std::atomic<std::size_t> slot_held{kSharedCounterSlot};
+  std::thread thread([&] {
+    thread_local LateAdder late;
+    late.counter = &counter;
+    late.slot_seen = &slot_seen;
+    counter.Add();
+    slot_held = ThisThreadCounterSlot();
+  });
+  thread.join();
+  ASSERT_LT(slot_held.load(), kMetricShards) << "the thread never held an exclusive slot";
+  // Once released, the slot may already belong to another thread, so writing
+  // it without an atomic read-modify-write could lose that thread's adds.
+  EXPECT_EQ(slot_seen.load(), kSharedCounterSlot);
+  EXPECT_EQ(counter.Value(), 6U);
 }
 
 TEST(CounterTest, CountsEveryAddFromManyThreads) {

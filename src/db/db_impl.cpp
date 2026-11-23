@@ -29,9 +29,19 @@ std::uint64_t MicrosSince(std::chrono::steady_clock::time_point start) {
   return Since<std::chrono::microseconds>(start);
 }
 
-// One Get in this many, per thread, is timed (see DBImpl::Get).
 // Get and Write each time one call in this many per thread (see Get).
 constexpr std::uint32_t kTimingInterval = 16;
+
+// Where a new thread's count of calls starts, so threads begin their
+// 1-in-kTimingInterval sampling at different offsets. Starting every thread
+// at its first call would time each thread's cold first call, and with
+// many short-lived threads those would crowd the sample. The stride is
+// coprime with kTimingInterval, so consecutive threads spread out.
+std::uint32_t FirstCallNumber() noexcept {
+  constexpr std::uint32_t kStride = 5;
+  static std::atomic<std::uint32_t> next{0};
+  return next.fetch_add(kStride, std::memory_order_relaxed) % kTimingInterval;
+}
 
 // Latency histograms take nanoseconds (MetricsRegistry::AddLatency).
 std::uint64_t NanosSince(std::chrono::steady_clock::time_point start) {
@@ -404,7 +414,7 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   }
   // Sampled like Get: two clock reads cost about 4% of an unsynced write
   // (phase 12 A/B).
-  thread_local std::uint32_t writes_on_this_thread = 0;
+  thread_local std::uint32_t writes_on_this_thread = FirstCallNumber();
   const bool timed = writes_on_this_thread++ % kTimingInterval == 0;
   const auto start =
       timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -546,9 +556,10 @@ std::size_t DBImpl::QueuedWritersForTest() {
 Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
   // Two clock reads cost about 50 ns, over 10% of a Get that misses every
   // table through its Bloom filter (phase 12 A/B). Timing one call in
-  // kTimingInterval per thread keeps the percentiles unbiased at a
-  // sixteenth of that cost; the first call of each thread is timed.
-  thread_local std::uint32_t calls_on_this_thread = 0;
+  // kTimingInterval per thread keeps a representative sample at a
+  // sixteenth of that cost. Each thread starts at its own offset
+  // (FirstCallNumber).
+  thread_local std::uint32_t calls_on_this_thread = FirstCallNumber();
   const bool timed = calls_on_this_thread++ % kTimingInterval == 0;
   const auto start =
       timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};

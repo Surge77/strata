@@ -83,7 +83,8 @@ TEST_F(StatsTest, AFreshDatabaseReportsItsOpening) {
 
 TEST_F(StatsTest, CountsGetsAndWritesWithTheirLatencies) {
   Open();
-  // On a thread of their own, so the per-thread timing sample starts fresh.
+  // Any 32 calls in a row on one thread include exactly 2 timed ones, whatever
+  // offset that thread's sampling started at.
   std::thread writer([this] {
     for (int i = 0; i < 32; ++i) {
       Put(Key(i), "v");
@@ -98,7 +99,7 @@ TEST_F(StatsTest, CountsGetsAndWritesWithTheirLatencies) {
   EXPECT_EQ(stats.counters.at("get.calls"), 32U);
   EXPECT_EQ(stats.counters.at("get.found"), 32U);
   EXPECT_EQ(stats.counters.at("get.memtable_answers"), 32U);
-  // One call in 16 per thread is timed; 32 in a row on one thread hold exactly 2.
+  // One call in 16 per thread is timed: 2 of the 32 writes and 2 of the 32 Gets.
   EXPECT_EQ(stats.latencies.at("write").count, 2U);
   EXPECT_EQ(stats.latencies.at("get").count, 2U);
   EXPECT_LE(stats.latencies.at("get").p50, stats.latencies.at("get").p99);

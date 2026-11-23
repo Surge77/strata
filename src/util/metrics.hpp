@@ -34,7 +34,8 @@ inline constexpr std::size_t kMetricShards = 8;
 }
 
 // Counter slots below this index have at most one live writer in the process.
-// Threads that find them all taken share this slot.
+// ThisThreadCounterSlot returns this value to a thread that found them all
+// taken; such a thread adds to one of kMetricShards shared slots instead.
 inline constexpr std::size_t kSharedCounterSlot = kMetricShards;
 
 namespace metrics_internal {
@@ -59,6 +60,9 @@ std::size_t ClaimCounterSlot() noexcept;
 // nothing can be lost, and it avoids the locked instruction that cost a
 // memtable Get about 26 ns across three counters (phase 12 A/B). Claiming a
 // slot acquires what its previous owner released, so the count carries over.
+// Threads beyond the exclusive slots spread over as many shared ones, picked
+// round-robin like ThisThreadShard, and fetch_add there: 16 busy threads put
+// two on a shared line rather than eight.
 //
 // Relaxed ordering: a counter orders nothing, and readers only need each value
 // to be one that was really reached. Each slot has a cache line of its own, so
@@ -67,12 +71,12 @@ class alignas(kCacheLineSize) Counter {
  public:
   void Add(std::uint64_t amount = 1) noexcept {
     const std::size_t slot = ThisThreadCounterSlot();
-    std::atomic<std::uint64_t>& value = slots_[slot].value;
     if (slot == kSharedCounterSlot) [[unlikely]] {
-      value.fetch_add(amount, std::memory_order_relaxed);
-    } else {
-      value.store(value.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
+      slots_[kMetricShards + ThisThreadShard()].value.fetch_add(amount, std::memory_order_relaxed);
+      return;
     }
+    std::atomic<std::uint64_t>& value = slots_[slot].value;
+    value.store(value.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
   }
   [[nodiscard]] std::uint64_t Value() const noexcept {
     std::uint64_t total = 0;
@@ -86,7 +90,8 @@ class alignas(kCacheLineSize) Counter {
   struct alignas(kCacheLineSize) Slot {
     std::atomic<std::uint64_t> value{0};
   };
-  std::array<Slot, kMetricShards + 1> slots_{};
+  // kMetricShards exclusive slots, then kMetricShards shared ones.
+  std::array<Slot, 2 * kMetricShards> slots_{};
 };
 
 // A Histogram that many threads can add to at once without a lock.

@@ -12,6 +12,8 @@ namespace strata {
 // A latency distribution in microseconds. Percentiles come from log-linear
 // buckets, so each is within 6.25% of the true sample value (see Histogram).
 struct LatencyStats {
+  // Samples timed, not calls made: the engine times one call in 16 per
+  // thread (docs/observability.md), and get.calls / write.calls count calls.
   std::uint64_t count = 0;
   double mean = 0.0;
   double p50 = 0.0;
