@@ -23,6 +23,7 @@ HotMetrics::HotMetrics(MetricsRegistry* registry)
       get_memtable_answers(registry->AddCounter("get.memtable_answers")),
       get_table_reads(registry->AddCounter("get.table_reads")),
       get_filter_skips(registry->AddCounter("get.filter_skips")),
+      write_calls(registry->AddCounter("write.calls")),
       iterators(registry->AddCounter("iterator.created")),
       get_nanos(registry->AddLatency("get")),
       write_nanos(registry->AddLatency("write")) {}
@@ -65,7 +66,6 @@ Result<Stats> DBImpl::CollectStats() {
   stats.counters = metrics_.CounterValues();
   stats.latencies = metrics_.LatencyValues();
   auto& counters = stats.counters;
-  counters["write.calls"] = stats.latencies.at("write").count;
   counters["write.groups"] = engine.write_groups;
   counters["write.bytes"] = engine.user_bytes_written;
   counters["write.syncs"] = engine.log_syncs;

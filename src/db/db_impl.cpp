@@ -30,7 +30,8 @@ std::uint64_t MicrosSince(std::chrono::steady_clock::time_point start) {
 }
 
 // One Get in this many, per thread, is timed (see DBImpl::Get).
-constexpr std::uint32_t kGetTimingInterval = 16;
+// Get and Write each time one call in this many per thread (see Get).
+constexpr std::uint32_t kTimingInterval = 16;
 
 // Latency histograms take nanoseconds (MetricsRegistry::AddLatency).
 std::uint64_t NanosSince(std::chrono::steady_clock::time_point start) {
@@ -401,12 +402,20 @@ Status DBImpl::Write(const WriteOptions& options, const WriteBatch& batch) {
   if (batch.Count() == 0) {
     return Status::Ok();
   }
-  const auto start = std::chrono::steady_clock::now();
+  // Sampled like Get: two clock reads cost about 4% of an unsynced write
+  // (phase 12 A/B).
+  thread_local std::uint32_t writes_on_this_thread = 0;
+  const bool timed = writes_on_this_thread++ % kTimingInterval == 0;
+  const auto start =
+      timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   Status status = WriteImpl(options, &batch);
   // Only accepted writes: a refused one is not part of the group-commit
-  // factor write.calls / write.groups. The histogram's count is write.calls.
+  // factor write.calls / write.groups.
   if (status.ok()) {
-    hot_.write_nanos.Add(NanosSince(start));
+    hot_.write_calls.Add();
+    if (timed) {
+      hot_.write_nanos.Add(NanosSince(start));
+    }
   }
   return status;
 }
@@ -537,10 +546,10 @@ std::size_t DBImpl::QueuedWritersForTest() {
 Result<std::string> DBImpl::Get(const ReadOptions& options, Slice key) {
   // Two clock reads cost about 50 ns, over 10% of a Get that misses every
   // table through its Bloom filter (phase 12 A/B). Timing one call in
-  // kGetTimingInterval per thread keeps the percentiles unbiased at a
+  // kTimingInterval per thread keeps the percentiles unbiased at a
   // sixteenth of that cost; the first call of each thread is timed.
   thread_local std::uint32_t calls_on_this_thread = 0;
-  const bool timed = calls_on_this_thread++ % kGetTimingInterval == 0;
+  const bool timed = calls_on_this_thread++ % kTimingInterval == 0;
   const auto start =
       timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   Result<std::string> result = GetImpl(options, key);

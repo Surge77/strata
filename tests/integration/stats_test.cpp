@@ -83,23 +83,27 @@ TEST_F(StatsTest, AFreshDatabaseReportsItsOpening) {
 
 TEST_F(StatsTest, CountsGetsAndWritesWithTheirLatencies) {
   Open();
-  for (int i = 0; i < 10; ++i) {
-    Put(Key(i), "v");
-  }
+  // On a thread of their own, so the per-thread timing sample starts fresh.
+  std::thread writer([this] {
+    for (int i = 0; i < 32; ++i) {
+      Put(Key(i), "v");
+    }
+  });
+  writer.join();
   for (int i = 0; i < 32; ++i) {
     static_cast<void>(db_->Get(ReadOptions{}, Key(i)));
   }
   const Stats stats = Collect();
-  EXPECT_EQ(stats.counters.at("write.calls"), 10U);
+  EXPECT_EQ(stats.counters.at("write.calls"), 32U);
   EXPECT_EQ(stats.counters.at("get.calls"), 32U);
-  EXPECT_EQ(stats.counters.at("get.found"), 10U);
-  EXPECT_EQ(stats.counters.at("get.memtable_answers"), 10U);
-  EXPECT_EQ(stats.latencies.at("write").count, 10U);
-  // One Get in 16 per thread is timed; 32 in a row on one thread hold exactly 2.
+  EXPECT_EQ(stats.counters.at("get.found"), 32U);
+  EXPECT_EQ(stats.counters.at("get.memtable_answers"), 32U);
+  // One call in 16 per thread is timed; 32 in a row on one thread hold exactly 2.
+  EXPECT_EQ(stats.latencies.at("write").count, 2U);
   EXPECT_EQ(stats.latencies.at("get").count, 2U);
   EXPECT_LE(stats.latencies.at("get").p50, stats.latencies.at("get").p99);
   EXPECT_GT(stats.gauges.at("memtable.bytes"), 0U);
-  EXPECT_EQ(stats.gauges.at("sequence.last"), 10U);
+  EXPECT_EQ(stats.gauges.at("sequence.last"), 32U);
 }
 
 TEST_F(StatsTest, RejectedWritesAndEmptyBatchesAreNotCounted) {

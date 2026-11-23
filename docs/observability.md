@@ -66,10 +66,10 @@ Write amplification is `(flush.bytes + compaction.bytes_written) / write.bytes`.
 
 ### Latencies
 
-`get` and `write`, in microseconds (fractional), from the call to its return. `write`
-times every call that `write.calls` counts, and its `count` is that counter. `get` times
-one call in 16 on each thread, so its `count` is about `get.calls / 16`: two clock reads
-cost more than 10% of the cheapest `Get` (a miss ruled out by every Bloom filter), and a
+`get` and `write`, in microseconds (fractional), from the call to its return. Each times
+one call in 16 on each thread (the first is timed), so its `count` is about
+`get.calls / 16` or `write.calls / 16`. Two clock reads cost more than 10% of the cheapest
+`Get` (a miss ruled out by every Bloom filter) and about 4% of an unsynced write, and a
 sample of every sixteenth call leaves the percentiles unbiased.
 `write` includes the time spent queued behind other writers and any stall, because that
 is what the caller waited. Each reports `count`, `mean`, `p50`, `p90`, `p99`, `p999`, and
