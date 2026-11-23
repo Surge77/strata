@@ -12,6 +12,7 @@ strata_add_test(fault_injection_env_test SUITE unit SOURCES fault_injection_env_
 strata_add_test(filename_test SUITE unit SOURCES filename_test.cpp)
 strata_add_test(histogram_test SUITE unit SOURCES histogram_test.cpp)
 strata_add_test(http_test    SUITE unit SOURCES http_test.cpp)
+strata_add_test(routes_test  SUITE unit SOURCES routes_test.cpp)
 strata_add_test(json_test    SUITE unit SOURCES json_test.cpp)
 strata_add_test(log_test     SUITE unit SOURCES log_test.cpp)
 strata_add_test(lru_cache_test SUITE unit SOURCES lru_cache_test.cpp)

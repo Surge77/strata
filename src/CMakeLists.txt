@@ -21,6 +21,7 @@ add_library(strata STATIC
     log/log_reader.cpp
     log/log_writer.cpp
     obs/http.cpp
+    obs/routes.cpp
     obs/stats_server.cpp
     table/block.cpp
     table/block_builder.cpp
