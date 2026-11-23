@@ -23,7 +23,36 @@ void AtomicMax(std::atomic<std::uint64_t>* target, std::uint64_t value) noexcept
   }
 }
 
+constinit std::array<std::atomic<bool>, kMetricShards> counter_slot_taken{};
+
+// Frees the slot at thread exit. A later Add from another thread_local's
+// destructor must not write a slot it no longer owns, so it moves to the
+// shared one.
+struct CounterSlotRelease {
+  std::size_t slot;
+  ~CounterSlotRelease() {
+    metrics_internal::this_thread_counter_slot = kSharedCounterSlot;
+    counter_slot_taken[slot].store(false, std::memory_order_release);
+  }
+};
+
 }  // namespace
+
+namespace metrics_internal {
+
+std::size_t ClaimCounterSlot() noexcept {
+  for (std::size_t slot = 0; slot < counter_slot_taken.size(); ++slot) {
+    if (!counter_slot_taken[slot].exchange(true, std::memory_order_acquire)) {
+      this_thread_counter_slot = slot;
+      [[maybe_unused]] thread_local const CounterSlotRelease release{slot};
+      return slot;
+    }
+  }
+  this_thread_counter_slot = kSharedCounterSlot;
+  return kSharedCounterSlot;
+}
+
+}  // namespace metrics_internal
 
 void ConcurrentHistogram::Add(std::uint64_t value) noexcept {
   Shard& shard = shards_[ThisThreadShard()];

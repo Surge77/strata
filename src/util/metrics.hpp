@@ -33,28 +33,60 @@ inline constexpr std::size_t kMetricShards = 8;
   return shard;
 }
 
-// A monotonic count, safe to bump from any thread without a lock. Relaxed
-// ordering: a counter orders nothing, and readers only need each value to be
-// one that was really reached. Each shard has a cache line of its own, so
+// Counter slots below this index have at most one live writer in the process.
+// Threads that find them all taken share this slot.
+inline constexpr std::size_t kSharedCounterSlot = kMetricShards;
+
+namespace metrics_internal {
+inline constexpr std::size_t kNoCounterSlot = SIZE_MAX;
+// constinit: reading it on the hot path needs no initialisation guard.
+inline constinit thread_local std::size_t this_thread_counter_slot = kNoCounterSlot;
+// Takes a free exclusive slot, or the shared one, until the thread exits.
+std::size_t ClaimCounterSlot() noexcept;
+}  // namespace metrics_internal
+
+// The calling thread's counter slot, claimed the first time it asks.
+[[nodiscard]] inline std::size_t ThisThreadCounterSlot() noexcept {
+  const std::size_t slot = metrics_internal::this_thread_counter_slot;
+  if (slot == metrics_internal::kNoCounterSlot) [[unlikely]] {
+    return metrics_internal::ClaimCounterSlot();
+  }
+  return slot;
+}
+
+// A monotonic count, safe to bump from any thread without a lock. A thread
+// holding an exclusive slot does a relaxed load and store: with one writer
+// nothing can be lost, and it avoids the locked instruction that cost a
+// memtable Get about 26 ns across three counters (phase 12 A/B). Claiming a
+// slot acquires what its previous owner released, so the count carries over.
+//
+// Relaxed ordering: a counter orders nothing, and readers only need each value
+// to be one that was really reached. Each slot has a cache line of its own, so
 // neither two threads nor two counters slow each other down.
 class alignas(kCacheLineSize) Counter {
  public:
   void Add(std::uint64_t amount = 1) noexcept {
-    shards_[ThisThreadShard()].value.fetch_add(amount, std::memory_order_relaxed);
+    const std::size_t slot = ThisThreadCounterSlot();
+    std::atomic<std::uint64_t>& value = slots_[slot].value;
+    if (slot == kSharedCounterSlot) [[unlikely]] {
+      value.fetch_add(amount, std::memory_order_relaxed);
+    } else {
+      value.store(value.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
+    }
   }
   [[nodiscard]] std::uint64_t Value() const noexcept {
     std::uint64_t total = 0;
-    for (const Shard& shard : shards_) {
-      total += shard.value.load(std::memory_order_relaxed);
+    for (const Slot& slot : slots_) {
+      total += slot.value.load(std::memory_order_relaxed);
     }
     return total;
   }
 
  private:
-  struct alignas(kCacheLineSize) Shard {
+  struct alignas(kCacheLineSize) Slot {
     std::atomic<std::uint64_t> value{0};
   };
-  std::array<Shard, kMetricShards> shards_{};
+  std::array<Slot, kMetricShards + 1> slots_{};
 };
 
 // A Histogram that many threads can add to at once without a lock.

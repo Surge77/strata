@@ -1,7 +1,10 @@
 #include "util/metrics.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <latch>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -22,7 +25,78 @@ TEST(CounterTest, StartsAtZeroAndAdds) {
 
 TEST(CounterTest, GivesEachShardItsOwnCacheLine) {
   EXPECT_EQ(alignof(Counter), kCacheLineSize);
-  EXPECT_EQ(sizeof(Counter), kMetricShards * kCacheLineSize);
+  EXPECT_EQ(sizeof(Counter), (kMetricShards + 1) * kCacheLineSize);
+}
+
+TEST(CounterTest, NeverGivesTwoLiveThreadsTheSameExclusiveSlot) {
+  constexpr std::size_t kThreads = kMetricShards + 2;
+  std::array<std::size_t, kThreads> slots{};
+  std::latch all_claimed(kThreads);
+  std::vector<std::thread> threads;
+  for (std::size_t thread = 0; thread < kThreads; ++thread) {
+    threads.emplace_back([&slots, &all_claimed, thread] {
+      slots[thread] = ThisThreadCounterSlot();
+      all_claimed.arrive_and_wait();  // stay alive until every thread holds its slot
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  std::set<std::size_t> exclusive;
+  std::size_t shared = 0;
+  for (const std::size_t slot : slots) {
+    if (slot == kSharedCounterSlot) {
+      ++shared;
+    } else {
+      EXPECT_LT(slot, kMetricShards);
+      EXPECT_TRUE(exclusive.insert(slot).second) << "slot " << slot << " was handed out twice";
+    }
+  }
+  EXPECT_GE(shared, 2U);
+}
+
+TEST(CounterTest, FreesASlotWhenItsThreadExits) {
+  // One short of every slot, because this thread may already hold one. Without
+  // the release, the second round would find them taken.
+  constexpr std::size_t kThreads = kMetricShards - 1;
+  for (int round = 0; round < 3; ++round) {
+    std::array<std::size_t, kThreads> slots{};
+    std::latch all_claimed(kThreads);
+    std::vector<std::thread> threads;
+    for (std::size_t thread = 0; thread < kThreads; ++thread) {
+      threads.emplace_back([&slots, &all_claimed, thread] {
+        slots[thread] = ThisThreadCounterSlot();
+        all_claimed.arrive_and_wait();
+      });
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+    for (const std::size_t slot : slots) {
+      EXPECT_LT(slot, kMetricShards) << "round " << round;
+    }
+  }
+}
+
+TEST(CounterTest, KeepsEveryAddWhenSlotsPassBetweenThreads) {
+  constexpr int kRounds = 50;
+  constexpr int kThreads = 12;  // more than kMetricShards, so some share a slot
+  constexpr std::uint64_t kPerThread = 1000;
+  Counter counter;
+  for (int round = 0; round < kRounds; ++round) {
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kThreads; ++thread) {
+      threads.emplace_back([&counter] {
+        for (std::uint64_t i = 0; i < kPerThread; ++i) {
+          counter.Add();
+        }
+      });
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+  }
+  EXPECT_EQ(counter.Value(), kRounds * kThreads * kPerThread);
 }
 
 TEST(CounterTest, CountsEveryAddFromManyThreads) {

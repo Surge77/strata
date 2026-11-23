@@ -604,7 +604,7 @@ Result<std::string> DBImpl::GetImpl(const ReadOptions& options, Slice key) {
   }
   ReadCounters counters;
   const auto found = version->Get(lookup, &value, table_cache_.get(), &counters);
-  // Skipping zero adds saves an atomic read-modify-write per lookup.
+  // Skipping zero adds saves a thread-local read and a store per lookup.
   if (counters.table_reads != 0) {
     hot_.get_table_reads.Add(counters.table_reads);
   }
