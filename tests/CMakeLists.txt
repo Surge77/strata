@@ -62,4 +62,34 @@ if(STRATA_BUILD_TOOLS)
            COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratabench_test.sh
                    $<TARGET_FILE:stratabench>)
   set_tests_properties(stratabench_cli PROPERTIES LABELS integration)
+
+  add_test(NAME stratasoak_cli
+           COMMAND ${STRATA_TEST_LAUNCHER} bash ${CMAKE_CURRENT_SOURCE_DIR}/cli/stratasoak_test.sh
+                   $<TARGET_FILE:stratasoak>)
+  set_tests_properties(stratasoak_cli PROPERTIES LABELS integration)
+
+  # The embedded copies must be the files in tools/dashboard.
+  strata_add_test(dashboard_files_test SUITE unit SOURCES unit/dashboard_files_test.cpp)
+  target_link_libraries(dashboard_files_test PRIVATE strata_dashboard)
+  target_compile_definitions(dashboard_files_test PRIVATE
+      STRATA_DASHBOARD_DIR="${PROJECT_SOURCE_DIR}/tools/dashboard")
+endif()
+
+# The dashboard's own logic, and its promise to read nothing but /stats, run
+# under Node's built-in test runner (Node 18 or later). Without Node the test
+# is not registered, and CMake says so.
+find_program(STRATA_NODE node)
+if(STRATA_NODE)
+  execute_process(COMMAND ${STRATA_NODE} --version OUTPUT_VARIABLE _node_version
+                  OUTPUT_STRIP_TRAILING_WHITESPACE)
+  string(REGEX MATCH "^v([0-9]+)" _node_major "${_node_version}")
+  if(CMAKE_MATCH_1 GREATER_EQUAL 18)
+    add_test(NAME dashboard_js
+             COMMAND ${STRATA_NODE} --test ${PROJECT_SOURCE_DIR}/tools/dashboard/dashboard.test.mjs)
+    set_tests_properties(dashboard_js PROPERTIES LABELS unit)
+  else()
+    message(STATUS "Node ${_node_version} is older than 18: dashboard_js not registered")
+  endif()
+else()
+  message(STATUS "Node not found: dashboard_js not registered")
 endif()

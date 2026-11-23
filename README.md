@@ -13,7 +13,9 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 12 complete; phase 13 (dashboard) is next.** A running database reports
+> **Status: Phase 13 complete; phase 14 (compression) is next.** `stratactl serve` and
+> `stratasoak --serve_port` serve a live dashboard (LSM levels, compaction progress, latency
+> charts, recovery events) built only on the JSON API. A running database reports
 > counters, gauges, latency percentiles, its LSM levels, compaction progress, and recovery
 > events through `DB::GetStats`, as JSON from a loopback-only HTTP endpoint (`StatsServer`,
 > `stratactl serve`), and as one `key=value` line per event in its info log; see

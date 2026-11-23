@@ -226,6 +226,21 @@ TEST(StatsServerStartTest, RejectsBadArguments) {
       << "binding an address this machine does not have fails";
 }
 
+TEST(StatsServerStartTest, ServesStaticFilesBesideTheStats) {
+  TestDir dir("stats_server_files");
+  DB db;
+  ASSERT_TRUE(DB::Open({.path = dir.File("db")}, &db).ok());
+  EXPECT_TRUE(StatsServer::Start(&db, {.files = {{.path = "/stats", .content_type = "text/html"}}})
+                  .status()
+                  .IsInvalidArgument());
+  auto server = StatsServer::Start(
+      &db, {.files = {{.path = "/", .content_type = "text/html; charset=utf-8", .body = "hi"}}});
+  ASSERT_TRUE(server.ok()) << server.status().ToString();
+  EXPECT_EQ(Body(Get((*server)->port(), "/")), "hi");
+  EXPECT_TRUE(Get((*server)->port(), "/stats").starts_with("HTTP/1.1 200"));
+  (*server)->Stop();
+}
+
 TEST(StatsServerStartTest, ServesOverIpv6Loopback) {
   TestDir dir("stats_server_v6");
   DB db;

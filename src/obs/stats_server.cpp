@@ -11,6 +11,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -20,6 +21,7 @@
 #include <unistd.h>
 
 #include "obs/http.hpp"
+#include "obs/routes.hpp"
 
 namespace strata {
 namespace {
@@ -29,7 +31,6 @@ namespace {
 constexpr int kListenBacklog = 16;
 constexpr auto kIoTimeout = std::chrono::seconds(2);
 constexpr int kAcceptBackoffMs = 100;
-constexpr std::string_view kJson = "application/json";
 constexpr std::string_view kText = "text/plain; charset=utf-8";
 
 Status ErrnoStatus(std::string_view what) {
@@ -111,13 +112,15 @@ void SendAll(int fd, std::string_view data, Deadline deadline) {
 
 class StatsServer::Impl {
  public:
-  Impl(const DB* db, Fd listener, Fd wake_read, Fd wake_write, std::uint16_t port, bool loopback)
+  Impl(const DB* db, Fd listener, Fd wake_read, Fd wake_write, std::uint16_t port, bool loopback,
+       std::vector<StaticFile> files)
       : db_(db),
         listener_(std::move(listener)),
         wake_read_(std::move(wake_read)),
         wake_write_(std::move(wake_write)),
         port_(port),
-        loopback_(loopback) {}
+        loopback_(loopback),
+        files_(std::move(files)) {}
 
   void Run() {
     while (true) {
@@ -197,44 +200,9 @@ class StatsServer::Impl {
       SendAll(fd, http::Response(431, kText, "request head too large\n"), deadline);
       return;
     }
-    SendAll(fd, Handle(std::string_view(buffer).substr(0, head_end)), deadline);
-  }
-
-  [[nodiscard]] std::string Handle(std::string_view head) const {
-    const auto request = http::ParseRequestHead(head);
-    if (!request.has_value()) {
-      return http::Response(400, kText, "malformed request\n");
-    }
-    // HTTP/1.1 requires Host; HTTP/1.0 clients (curl -0, scripts) may omit it.
-    if (!request->host.has_value() && request->version == "HTTP/1.1") {
-      return http::Response(400, kText, "HTTP/1.1 requires a Host header\n");
-    }
-    if (loopback_ && request->host.has_value() && !http::IsLoopbackHost(*request->host)) {
-      return http::Response(403, kText, "this server answers only to a loopback Host\n");
-    }
-    const bool head_only = request->method == "HEAD";
-    if (request->method != "GET" && !head_only) {
-      return http::Response(405, kText, "only GET and HEAD are supported\n", false,
-                            "Allow: GET, HEAD\r\n");
-    }
-    if (request->path == "/stats") {
-      const Result<Stats> stats = db_->GetStats();
-      if (!stats.ok()) {
-        return http::Response(503, kText, stats.status().ToString() + "\n", head_only);
-      }
-      return http::Response(200, kJson, StatsToJson(*stats), head_only);
-    }
-    if (request->path == "/healthz") {
-      const Result<Stats> stats = db_->GetStats();
-      if (!stats.ok()) {
-        return http::Response(503, kText, stats.status().ToString() + "\n", head_only);
-      }
-      if (!stats->background_error.empty()) {
-        return http::Response(503, kText, stats->background_error + "\n", head_only);
-      }
-      return http::Response(200, kText, "ok\n", head_only);
-    }
-    return http::Response(404, kText, "not found\n", head_only);
+    const obs::RouteContext context{.db = db_, .loopback = loopback_, .files = &files_};
+    SendAll(fd, obs::HandleRequest(std::string_view(buffer).substr(0, head_end), context),
+            deadline);
   }
 
   const DB* const db_;
@@ -243,6 +211,7 @@ class StatsServer::Impl {
   const Fd wake_write_;
   const std::uint16_t port_;
   const bool loopback_;
+  const std::vector<StaticFile> files_;
 };
 
 Result<std::unique_ptr<StatsServer>> StatsServer::Start(const DB* db,
@@ -250,6 +219,7 @@ Result<std::unique_ptr<StatsServer>> StatsServer::Start(const DB* db,
   if (db == nullptr) {
     return Status::InvalidArgument("StatsServer needs a database");
   }
+  STRATA_RETURN_IF_ERROR(obs::ValidateStaticFiles(options.files));
   STRATA_ASSIGN_OR_RETURN(SocketAddress address, ParseAddress(options.bind_address, options.port));
   Fd listener(::socket(address.family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
   if (listener.get() < 0) {
@@ -280,7 +250,7 @@ Result<std::unique_ptr<StatsServer>> StatsServer::Start(const DB* db,
     return ErrnoStatus("pipe2");
   }
   auto impl = std::make_unique<Impl>(db, std::move(listener), Fd(pipe_fds[0]), Fd(pipe_fds[1]),
-                                     port, address.loopback);
+                                     port, address.loopback, options.files);
   Impl* const raw = impl.get();
   raw->thread_ = std::thread([raw] { raw->Run(); });
   return std::unique_ptr<StatsServer>(new StatsServer(std::move(impl)));

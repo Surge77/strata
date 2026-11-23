@@ -109,7 +109,7 @@ std::map<std::string, LatencyStats> MetricsRegistry::LatencyValues() const {
 }
 
 LatencyStats Summarize(const Histogram& histogram, double unit) {
-  return LatencyStats{
+  LatencyStats stats{
       .count = histogram.Count(),
       .mean = histogram.Mean() / unit,
       .p50 = histogram.Percentile(50) / unit,
@@ -117,7 +117,18 @@ LatencyStats Summarize(const Histogram& histogram, double unit) {
       .p99 = histogram.Percentile(99) / unit,
       .p999 = histogram.Percentile(99.9) / unit,
       .max = static_cast<double>(histogram.Max()) / unit,
+      .buckets = {},
   };
+  for (std::size_t bucket = 0; bucket < Histogram::kBucketCount; ++bucket) {
+    const std::uint64_t count = histogram.BucketCount(bucket);
+    if (count != 0) {
+      stats.buckets.push_back(LatencyBucket{
+          .upper_micros = static_cast<double>(Histogram::BucketUpperBound(bucket)) / unit,
+          .count = count,
+      });
+    }
+  }
+  return stats;
 }
 
 }  // namespace strata
