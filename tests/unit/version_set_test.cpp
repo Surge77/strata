@@ -259,6 +259,19 @@ TEST_F(VersionSetTest, RemovingAFileThatIsNotThereIsRejected) {
   EXPECT_TRUE(versions->LogAndApply(&edit).IsCorruption());
 }
 
+// An edit naming a level that does not exist is corrupt, not a crash: the
+// level indexes an array.
+TEST_F(VersionSetTest, RemovingAFileFromALevelThatDoesNotExistIsRejected) {
+  auto versions = NewVersionSet();
+  bool existing = false;
+  ASSERT_TRUE(versions->Recover(&existing).ok());
+  for (const int level : {-1, strata::kNumLevels}) {
+    VersionEdit edit;
+    edit.RemoveFile(level, 1);
+    EXPECT_TRUE(versions->LogAndApply(&edit).IsCorruption()) << "level " << level;
+  }
+}
+
 TEST_F(VersionSetTest, LevelBytesSumFileSizes) {
   auto versions = NewVersionSet();
   bool existing = false;

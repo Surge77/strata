@@ -400,6 +400,22 @@ TEST_F(CompactionTest, DeeperLevelsCompactAutomaticallyWhenOverBudget) {
   }
 }
 
+// A tombstone meeting its value at the bottom leaves nothing to write: the
+// compaction must finish with no output table at all, not an empty one.
+TEST_F(CompactionTest, ACompactionThatDropsEverythingWritesNoTable) {
+  Open();
+  Put("gone", "value");
+  Flush();
+  CompactLevel(0);  // a trivial move: the value now sits alone in level 1
+  ASSERT_EQ(Files(1), 1U);
+  Delete("gone");
+  Flush();
+  CompactLevel(0);  // overlaps level 1, so the two are merged, and both drop
+  EXPECT_EQ(Files(0), 0U);
+  EXPECT_EQ(Files(1), 0U) << "the merge kept nothing, so it must create nothing";
+  EXPECT_EQ(Get("gone"), "NOT_FOUND");
+}
+
 TEST_F(CompactionTest, CorruptInputFailsTheCompactionAndKeepsTheInputs) {
   Open();
   SeedLevel(1, {"key", "keyz"});
