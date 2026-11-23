@@ -74,15 +74,15 @@ TEST(StatsToJsonTest, WritesMetricsLevelsAndEvents) {
   Stats stats;
   stats.counters["get.calls"] = 3;
   stats.gauges["memtable.bytes"] = 4096;
-  stats.latencies["get"] =
-      LatencyStats{.count = 2,
-                   .mean = 1.5,
-                   .p50 = 1,
-                   .p90 = 2,
-                   .p99 = 2,
-                   .p999 = 2,
-                   .max = 2,
-                   .buckets = {{.upper_micros = 1.5, .count = 1}, {.upper_micros = 2.5, .count = 1}}};
+  stats.latencies["get"] = LatencyStats{
+      .count = 2,
+      .mean = 1.5,
+      .p50 = 1,
+      .p90 = 2,
+      .p99 = 2,
+      .p999 = 2,
+      .max = 2,
+      .buckets = {{.upper_micros = 1.5, .count = 1}, {.upper_micros = 2.5, .count = 1}}};
   stats.levels.push_back(LevelStats{
       .level = 1, .files = 2, .bytes = 300, .target_bytes = 1000, .compaction_score = 0.3});
   stats.compaction =

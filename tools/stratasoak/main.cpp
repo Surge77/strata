@@ -99,14 +99,16 @@ std::optional<Args> ParseArgs(int argc, char** argv) {
   return args;
 }
 
-void PrintProgress(std::uint64_t elapsed_s, const strata::soak::Totals& totals, const strata::DB& db) {
+void PrintProgress(std::uint64_t elapsed_s, const strata::soak::Totals& totals,
+                   const strata::DB& db) {
   std::cout << "t=" << elapsed_s << "s writes=" << totals.writes << " deletes=" << totals.deletes
             << " reads=" << totals.reads << " scans=" << totals.scans
             << " snapshots=" << totals.snapshots;
   if (const auto stats = db.GetStats(); stats.ok()) {
     std::cout << " memtable=" << stats->gauges.at("memtable.bytes") << "B levels=";
     for (const strata::LevelStats& level : stats->levels) {
-      std::cout << level.files << (level.level + 1 < static_cast<int>(stats->levels.size()) ? "," : "");
+      std::cout << level.files
+                << (level.level + 1 < static_cast<int>(stats->levels.size()) ? "," : "");
     }
   }
   std::cout << std::endl;
@@ -156,10 +158,9 @@ int main(int argc, char** argv) {
     }
     const auto wait = std::min(end, next_progress) - now;
     const auto wait_s = std::chrono::duration_cast<std::chrono::seconds>(wait);
-    const timespec timeout{.tv_sec = wait_s.count(),
-                           .tv_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                          wait - wait_s)
-                                          .count()};
+    const timespec timeout{
+        .tv_sec = wait_s.count(),
+        .tv_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(wait - wait_s).count()};
     if (sigtimedwait(&stop_signals, nullptr, &timeout) > 0) {
       std::cout << "interrupted" << std::endl;
       break;
@@ -172,8 +173,8 @@ int main(int argc, char** argv) {
     }
   }
   workload.Stop();
-  const auto ran = std::chrono::duration_cast<std::chrono::seconds>(
-      std::chrono::steady_clock::now() - start);
+  const auto ran =
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start);
   PrintProgress(static_cast<std::uint64_t>(ran.count()), workload.totals(), db);
   pthread_sigmask(SIG_UNBLOCK, &stop_signals, nullptr);
   if (server != nullptr) {

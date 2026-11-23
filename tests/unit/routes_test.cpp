@@ -26,7 +26,8 @@ std::string Request(const std::vector<StaticFile>& files, const std::string& met
 
 bool HasHeader(const std::string& response, const std::string& header) {
   const std::size_t end = response.find("\r\n\r\n");
-  return response.substr(0, end).find("\r\n" + header) != std::string::npos;
+  // Keep the last header line's own CRLF; the blank line starts after it.
+  return response.substr(0, end + 2).find("\r\n" + header) != std::string::npos;
 }
 
 TEST(RoutesTest, ServesAStaticFileWithItsTypeAndBody) {

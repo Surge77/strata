@@ -2,14 +2,14 @@
 
 #include "dashboard_files.hpp"
 
-#include "obs/routes.hpp"
-
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
+
+#include "obs/routes.hpp"
 
 namespace strata {
 namespace {
@@ -38,8 +38,10 @@ TEST(DashboardFilesTest, EmbedsEveryFileWithItsType) {
 
 TEST(DashboardFilesTest, EmbeddedBodiesMatchTheSourceFiles) {
   const std::map<std::string, std::string> sources = {
-      {"/", "index.html"},       {"/dashboard.css", "dashboard.css"},
-      {"/dashboard.js", "dashboard.js"}, {"/model.js", "model.js"},
+      {"/", "index.html"},
+      {"/dashboard.css", "dashboard.css"},
+      {"/dashboard.js", "dashboard.js"},
+      {"/model.js", "model.js"},
       {"/charts.js", "charts.js"},
   };
   for (const StaticFile& file : dashboard::Files()) {

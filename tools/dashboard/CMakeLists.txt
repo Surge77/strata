@@ -2,14 +2,19 @@
 # them with nothing on disk. Each file is embedded as a raw string literal at
 # configure time; editing one re-runs CMake (CMAKE_CONFIGURE_DEPENDS).
 
-# file, served path, content type -- three entries per file.
+# file, served path, kind -- three entries per file. Content types hold a
+# ";", which a CMake list would split, so they are looked up by kind.
 set(_strata_dashboard_files
-    index.html    "/"              "text/html; charset=utf-8"
-    dashboard.css "/dashboard.css" "text/css; charset=utf-8"
-    dashboard.js  "/dashboard.js"  "text/javascript; charset=utf-8"
-    model.js      "/model.js"      "text/javascript; charset=utf-8"
-    charts.js     "/charts.js"     "text/javascript; charset=utf-8")
-set(_delimiter "strata_dashboard_file")
+    index.html    /              html
+    dashboard.css /dashboard.css css
+    dashboard.js  /dashboard.js  js
+    model.js      /model.js      js
+    charts.js     /charts.js     js)
+set(_type_html "text/html; charset=utf-8")
+set(_type_css "text/css; charset=utf-8")
+set(_type_js "text/javascript; charset=utf-8")
+# A raw string delimiter may be at most 16 characters.
+set(_delimiter "strata_dash")
 
 set(_generated "${CMAKE_CURRENT_BINARY_DIR}/dashboard_files.cpp")
 set(_staging "${_generated}.staging")
@@ -26,7 +31,8 @@ foreach(_i RANGE 0 ${_last} 3)
   math(EXPR _type_index "${_i} + 2")
   list(GET _strata_dashboard_files ${_i} _file)
   list(GET _strata_dashboard_files ${_path_index} _path)
-  list(GET _strata_dashboard_files ${_type_index} _type)
+  list(GET _strata_dashboard_files ${_type_index} _kind)
+  set(_type "${_type_${_kind}}")
   set(_source "${CMAKE_CURRENT_SOURCE_DIR}/${_file}")
   file(READ "${_source}" _content)
   string(FIND "${_content}" ")${_delimiter}\"" _clash)

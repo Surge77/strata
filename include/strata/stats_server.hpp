@@ -14,9 +14,9 @@ class DB;
 // A file the server serves as it is, such as the pages of a dashboard that
 // reads /stats (stratactl serve adds the one in tools/dashboard).
 struct StaticFile {
-  std::string path;          // absolute, e.g. "/" or "/app.js"; not /stats or /healthz
-  std::string content_type;  // e.g. "text/html; charset=utf-8"
-  std::string body;
+  std::string path{};          // absolute, e.g. "/" or "/app.js"; not /stats or /healthz
+  std::string content_type{};  // e.g. "text/html; charset=utf-8"
+  std::string body{};
 };
 
 struct StatsServerOptions {
@@ -29,7 +29,7 @@ struct StatsServerOptions {
   std::uint16_t port = 0;
   // Served at their paths, with a Content-Security-Policy that lets a page
   // load only this server's files and connect only to this server.
-  std::vector<StaticFile> files;
+  std::vector<StaticFile> files{};
 };
 
 // A small HTTP server for a database's stats, read-only:

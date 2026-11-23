@@ -10,8 +10,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <vector>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <fcntl.h>

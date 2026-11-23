@@ -97,8 +97,7 @@ Status ValidateStaticFiles(const std::vector<StaticFile>& files) {
     if (!seen.insert(file.path).second) {
       return Status::InvalidArgument("two static files at " + file.path);
     }
-    if (file.content_type.empty() ||
-        file.content_type.find_first_of("\r\n") != std::string::npos) {
+    if (file.content_type.empty() || file.content_type.find_first_of("\r\n") != std::string::npos) {
       return Status::InvalidArgument("static file needs a one-line content type: " + file.path);
     }
   }

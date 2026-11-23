@@ -19,8 +19,8 @@
 #include <string>
 #include <string_view>
 
-#include "db/dbformat.hpp"
 #include "dashboard_files.hpp"
+#include "db/dbformat.hpp"
 #include "table/table.hpp"
 
 namespace {
@@ -190,8 +190,7 @@ int Serve(std::span<char*> args) {
   const bool v6 = options.bind_address.find(':') != std::string::npos;
   const std::string origin = "http://" + std::string(v6 ? "[" : "") + options.bind_address +
                              (v6 ? "]" : "") + ':' + std::to_string((*server)->port());
-  std::cout << "serving " << origin << "/stats
-"
+  std::cout << "serving " << origin << "/stats\n"
             << "dashboard " << origin << "/" << std::endl;
   int signal = 0;
   sigwait(&stop_signals, &signal);
