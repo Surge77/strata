@@ -27,7 +27,9 @@ class ManifestReporter final : public log::Reader::Reporter {
 }  // namespace
 
 Result<MemTable::LookupResult> Version::Get(const LookupKey& key, std::string* value,
-                                            TableCache* tables) const {
+                                            TableCache* tables, ReadCounters* counters) const {
+  ReadCounters ignored;
+  ReadCounters& count = counters != nullptr ? *counters : ignored;
   const Comparator* user = comparator_->user_comparator();
   const Slice user_key = key.user_key();
 
@@ -57,8 +59,10 @@ Result<MemTable::LookupResult> Version::Get(const LookupKey& key, std::string* v
   for (const FileMetaData* file : candidates) {
     STRATA_ASSIGN_OR_RETURN(auto table, tables->Find(file->number, file->file_size));
     if (!table->MayContainUserKey(user_key)) {
+      ++count.filter_skips;
       continue;
     }
+    ++count.table_reads;
     MemTable::LookupResult result = MemTable::LookupResult::kNotPresent;
     STRATA_RETURN_IF_ERROR(table->Seek(key.internal_key(), [&](Slice found_key, Slice found_value) {
       ParsedInternalKey parsed;

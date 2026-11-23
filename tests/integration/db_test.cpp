@@ -260,12 +260,12 @@ TEST_F(DBTest, InfoLogAccumulatesAcrossSessions) {
   EXPECT_FALSE(std::filesystem::exists(dir_.File("db/LOG.old")));
   const std::string contents = strata::test::ReadFileToString(dir_.File("db/LOG"));
   std::size_t banners = 0;
-  for (std::size_t at = contents.find("=== opening"); at != std::string::npos;
-       at = contents.find("=== opening", at + 1)) {
+  for (std::size_t at = contents.find("event=db_opening "); at != std::string::npos;
+       at = contents.find("event=db_opening ", at + 1)) {
     ++banners;
   }
   EXPECT_EQ(banners, 2U) << contents;
-  EXPECT_NE(contents.find("replayed"), std::string::npos) << contents;
+  EXPECT_NE(contents.find("event=db_opened logs_replayed="), std::string::npos) << contents;
 }
 
 // Rejecting an existing database must leave it exactly as it was.

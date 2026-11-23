@@ -13,12 +13,16 @@ auto value = db.Get("user:101");
 db.Delete("user:101");
 ```
 
-> **Status: Phase 11 complete; phase 12 (observability) is next.** Benchmarks run through
-> `stratabench` with a stated statistical protocol and an open-loop latency harness; see
-> [docs/benchmarks.md](docs/benchmarks.md). On the reference laptop most figures did not reach
-> the 5% CV gate, and that page says so instead of printing them as results. The open-loop run
-> found a real latency defect: the WAL rotation fsyncs while holding the DB mutex, which gives a
-> 62 ms p99 at half the maximum load. Fixing it is the next change.
+> **Status: Phase 12 complete; phase 13 (dashboard) is next.** A running database reports
+> counters, gauges, latency percentiles, its LSM levels, compaction progress, and recovery
+> events through `DB::GetStats`, as JSON from a loopback-only HTTP endpoint (`StatsServer`,
+> `stratactl serve`), and as one `key=value` line per event in its info log; see
+> [docs/observability.md](docs/observability.md). The instrumentation costs about 3 ns per
+> call. Benchmarks run through `stratabench` with a stated statistical protocol and an
+> open-loop latency harness; see [docs/benchmarks.md](docs/benchmarks.md). On the reference
+> laptop most figures did not reach the 5% CV gate, and that page says so instead of printing
+> them as results. The WAL rotation no longer fsyncs while holding the DB mutex, the latency
+> defect the open-loop run found.
 > `DB::Open`, `Put`, `Get`, `Delete`, and atomic `Write` batches work as shown above. Every
 > acknowledged write survives a `kill -9`, and every `sync = true` write (or any write followed
 > by a clean `Close`) survives power loss. Each claim is backed by crash tests;
@@ -106,6 +110,7 @@ depend on, and it would make every benchmark number meaningless.
 | `docs/format/` | byte-level on-disk format specifications *(phases 2, 4, 5)* |
 | `docs/decisions/` | architecture decision records |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | measured results with full methodology |
+| [`docs/observability.md`](docs/observability.md) | every metric and event, the JSON schema, and the endpoint's security model |
 | `docs/limitations.md` | what this engine does not do *(phase 15)* |
 
 ## Non-goals

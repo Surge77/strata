@@ -4,6 +4,7 @@
 #include "strata/status.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -73,6 +74,9 @@ struct CompactionJobOptions {
   // No snapshot can see anything older than this. With no snapshots, the
   // newest sequence number.
   SequenceNumber smallest_snapshot = 0;
+  // If not null, advanced by each output table's size as it is finished, so
+  // the stats API can show a running compaction's progress.
+  std::atomic<std::uint64_t>* bytes_written_progress = nullptr;
   // Allocates a table number that obsolete-file cleanup will not touch.
   // Called without the DB mutex held.
   std::function<std::uint64_t()> new_file_number;

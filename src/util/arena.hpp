@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -23,7 +24,9 @@ namespace strata {
 //     entry sizes that ignores per-allocation overhead.
 //
 // Not thread-safe. A memtable has exactly one writer, which is what makes the
-// unsynchronised bump pointer sound; readers never allocate.
+// unsynchronised bump pointer sound; readers never allocate. The one
+// exception is MemoryUsage(), which the stats API reads from other threads
+// while a synced write inserts with the DB mutex released.
 class Arena {
  public:
   Arena() = default;
@@ -31,8 +34,8 @@ class Arena {
 
   Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
-  Arena(Arena&&) noexcept = default;
-  Arena& operator=(Arena&&) noexcept = default;
+  Arena(Arena&&) = delete;
+  Arena& operator=(Arena&&) = delete;
 
   // Returns at least `bytes` of storage with no alignment guarantee beyond 1.
   // The returned memory is uninitialised and stays valid until the Arena dies.
@@ -45,7 +48,10 @@ class Arena {
   // Total bytes reserved from the allocator, including the space still unused
   // in the current block and the bookkeeping for the block list. This is the
   // number a flush threshold should be compared against.
-  [[nodiscard]] std::size_t MemoryUsage() const noexcept { return memory_usage_; }
+  // Safe to call from any thread.
+  [[nodiscard]] std::size_t MemoryUsage() const noexcept {
+    return memory_usage_.load(std::memory_order_relaxed);
+  }
 
   // Bytes handed out to callers. Always <= MemoryUsage(); the difference is
   // internal fragmentation, which is worth being able to observe.
@@ -63,7 +69,9 @@ class Arena {
 
   char* cursor_ = nullptr;
   std::size_t remaining_ = 0;
-  std::size_t memory_usage_ = 0;
+  // Atomic only for MemoryUsage() readers; the single writer stores with a
+  // plain load-add-store, so allocation pays no read-modify-write.
+  std::atomic<std::size_t> memory_usage_{0};
   std::size_t bytes_allocated_ = 0;
   std::vector<std::unique_ptr<char[]>> blocks_;
 };

@@ -6,10 +6,13 @@
 #include "strata/options.hpp"
 #include "strata/result.hpp"
 #include "strata/slice.hpp"
+#include "strata/stats.hpp"
 #include "strata/status.hpp"
 #include "strata/write_batch.hpp"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -29,6 +32,8 @@
 #include "db/table_cache.hpp"
 #include "db/version_set.hpp"
 #include "log/log_writer.hpp"
+#include "util/event_log.hpp"
+#include "util/metrics.hpp"
 
 namespace strata {
 
@@ -36,6 +41,7 @@ namespace strata {
 // amplification: bytes written to tables per byte of user data.
 struct DBStats {
   std::uint64_t user_bytes_written = 0;   // encoded batches accepted by Write
+  std::uint64_t flushes = 0;              // memtables flushed to level 0
   std::uint64_t flush_bytes_written = 0;  // level-0 tables written by flush
   std::uint64_t compactions = 0;
   std::uint64_t trivial_moves = 0;
@@ -45,6 +51,26 @@ struct DBStats {
   std::uint64_t write_stops = 0;      // waits because level 0 was full
   std::uint64_t write_groups = 0;     // log records written: one per commit group
   std::uint64_t log_syncs = 0;        // fsyncs of the log for synced groups
+  std::uint64_t log_rotations = 0;    // memtable switches to a new log
+};
+
+// The metrics the engine updates without holding its mutex: the per-call
+// counters and latencies of the hot paths. Work that already happens under
+// the mutex (flushes, compactions, commit groups) is counted in DBStats.
+struct HotMetrics {
+  explicit HotMetrics(MetricsRegistry* registry);
+
+  // Gets and writes are timed by sampling, so their call counts are counters
+  // of their own rather than the histograms' counts.
+  Counter& get_calls;
+  Counter& get_found;
+  Counter& get_memtable_answers;
+  Counter& get_table_reads;
+  Counter& get_filter_skips;
+  Counter& write_calls;
+  Counter& iterators;
+  ConcurrentHistogram& get_nanos;
+  ConcurrentHistogram& write_nanos;
 };
 
 // The engine behind strata::DB.
@@ -88,6 +114,9 @@ class DBImpl {
   Status Close();
 
   [[nodiscard]] DBStats GetStats();
+  // The public stats view (see include/strata/stats.hpp). InvalidArgument once
+  // closed. In db_impl_stats.cpp.
+  Result<Stats> CollectStats();
 
   // Test hooks. ForTest methods may block and are not meant for production.
   std::size_t QueuedWritersForTest();         // writers waiting behind the leader
@@ -128,6 +157,7 @@ class DBImpl {
     std::condition_variable cv;
   };
   Status WriteImpl(const WriteOptions& options, const WriteBatch* batch);
+  Result<std::string> GetImpl(const ReadOptions& options, Slice key);
 
   // The rest of these are called with mutex_ held.
   // `force` switches a non-empty memtable even if it has room.
@@ -160,6 +190,12 @@ class DBImpl {
   std::unique_ptr<FileLock> db_lock_;
   std::unique_ptr<Logger> owned_info_log_;
   Logger* info_log_ = nullptr;
+  EventLog events_;
+  MetricsRegistry metrics_;
+  HotMetrics hot_{&metrics_};  // after metrics_, which it registers into
+  const std::chrono::steady_clock::time_point opened_at_ = std::chrono::steady_clock::now();
+  // Bytes the running compaction has written; reset when one starts.
+  std::atomic<std::uint64_t> compaction_bytes_written_{0};
   // Shared with live iterators, which may outlive this DB. It owns the block
   // cache.
   std::shared_ptr<TableCache> table_cache_;
@@ -182,6 +218,10 @@ class DBImpl {
   std::condition_variable writers_idle_;  // the queue just became empty
   WriteBatch group_batch_;                // the leader's merged batch; only the leader uses it
   DBStats stats_;
+  // The running compaction, if any (CollectStats reads these).
+  bool compaction_running_ = false;
+  int compaction_level_ = 0;
+  std::uint64_t compaction_input_bytes_ = 0;
   // Per level, the user key after which the next automatic compaction starts.
   std::array<std::string, kNumLevels> compact_next_start_;
   std::optional<int> manual_compaction_level_;

@@ -59,6 +59,7 @@ Status DBImpl::SwitchMemTable(std::unique_lock<std::mutex>* lock) {
   if (Status status = NewLogFile(lock); !status.ok()) {
     background_error_ = status;
     background_done_.notify_all();  // waiters re-check background_error_
+    events_.Record(LogLevel::kError, "log_rotation_failed", {Field("error", status.ToString())});
     return status;
   }
   imm_ = std::move(mem_);
@@ -135,8 +136,7 @@ void DBImpl::FlushImmutable(std::unique_lock<std::mutex>* lock) {
     DeleteObsoleteFiles();
   } else {
     background_error_ = status;
-    Log(info_log_, LogLevel::kError, "flush failed; refusing further writes: {}",
-        status.ToString());
+    events_.Record(LogLevel::kError, "flush_failed", {Field("error", status.ToString())});
   }
 }
 
@@ -154,8 +154,9 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
     status = versions_->LogAndApply(&edit);
     if (status.ok()) {
       ++stats_.trivial_moves;
-      Log(info_log_, LogLevel::kInfo, "moved table {} to level {}",
-          compaction.inputs[0].front().number, compaction.output_level());
+      events_.Record(LogLevel::kInfo, "table_moved",
+                     {Field("table", compaction.inputs[0].front().number),
+                      Field("level", compaction.output_level())});
     }
   } else {
     const std::shared_ptr<const Version> version = versions_->current();
@@ -168,6 +169,7 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
         .use_filter = options_.bloom_filter,
         .max_file_size = options_.max_file_size,
         .smallest_snapshot = SmallestSnapshot(),
+        .bytes_written_progress = &compaction_bytes_written_,
         .new_file_number =
             [this, &allocated] {
               const std::lock_guard<std::mutex> guard(mutex_);
@@ -179,9 +181,23 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
     };
     std::vector<FileMetaData> outputs;
     CompactionStats job_stats;
+    compaction_running_ = true;
+    compaction_level_ = compaction.level;
+    compaction_input_bytes_ = 0;
+    for (const auto& level_inputs : compaction.inputs) {
+      for (const FileMetaData& file : level_inputs) {
+        compaction_input_bytes_ += file.file_size;
+      }
+    }
+    compaction_bytes_written_.store(0, std::memory_order_relaxed);
+    const auto start = std::chrono::steady_clock::now();
     lock->unlock();
     status = RunCompaction(job, compaction, *version, &outputs, &job_stats);
     lock->lock();
+    compaction_running_ = false;
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
     if (status.ok()) {
       for (FileMetaData& output : outputs) {
         edit.AddFile(compaction.output_level(), std::move(output));
@@ -202,16 +218,17 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
       ++stats_.compactions;
       stats_.compaction_bytes_read += job_stats.bytes_read;
       stats_.compaction_bytes_written += job_stats.bytes_written;
-      Log(info_log_, LogLevel::kInfo, "compacted level {} into {}: {} bytes read, {} written",
-          compaction.level, compaction.output_level(), job_stats.bytes_read,
-          job_stats.bytes_written);
+      events_.Record(
+          LogLevel::kInfo, "compaction_finished",
+          {Field("level", compaction.level), Field("output_level", compaction.output_level()),
+           Field("bytes_read", job_stats.bytes_read),
+           Field("bytes_written", job_stats.bytes_written), Field("micros", micros)});
     }
   }
 
   if (!status.ok()) {
     background_error_ = status;
-    Log(info_log_, LogLevel::kError, "compaction failed; refusing further writes: {}",
-        status.ToString());
+    events_.Record(LogLevel::kError, "compaction_failed", {Field("error", status.ToString())});
     return status;
   }
   DeleteObsoleteFiles();

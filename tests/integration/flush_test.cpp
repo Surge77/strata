@@ -150,7 +150,7 @@ TEST_F(FlushTest, FullMemtableIsFlushedToATableAndStaysReadable) {
     ASSERT_EQ(Get(Key(index)), Value(index)) << index;
   }
   const std::string log = strata::test::ReadFileToString(dir_.File("db/LOG"));
-  EXPECT_NE(log.find("flushed table"), std::string::npos);
+  EXPECT_NE(log.find("event=flush_finished table="), std::string::npos);
 }
 
 TEST_F(FlushTest, ConcurrentReaderKeepsAKeyVisibleDuringFlush) {

@@ -78,7 +78,9 @@ char* Arena::AllocateNewBlock(std::size_t block_bytes) {
   blocks_.push_back(std::make_unique<char[]>(block_bytes));
   // Counts the block plus the unique_ptr tracking it, so MemoryUsage() reflects
   // what the process actually holds rather than only the payload.
-  memory_usage_ += block_bytes + sizeof(std::unique_ptr<char[]>);
+  memory_usage_.store(
+      memory_usage_.load(std::memory_order_relaxed) + block_bytes + sizeof(std::unique_ptr<char[]>),
+      std::memory_order_relaxed);
   return blocks_.back().get();
 }
 

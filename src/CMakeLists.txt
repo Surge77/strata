@@ -7,17 +7,21 @@ add_library(strata STATIC
     db/db.cpp
     db/db_impl.cpp
     db/db_impl_background.cpp
+    db/db_impl_stats.cpp
     db/db_iter.cpp
     db/level_iterator.cpp
     db/dbformat.cpp
     db/filename.cpp
     db/memtable.cpp
+    db/stats_json.cpp
     db/table_cache.cpp
     db/version_edit.cpp
     db/version_set.cpp
     db/write_batch.cpp
     log/log_reader.cpp
     log/log_writer.cpp
+    obs/http.cpp
+    obs/stats_server.cpp
     table/block.cpp
     table/block_builder.cpp
     table/bloom_filter.cpp
@@ -30,8 +34,11 @@ add_library(strata STATIC
     util/comparator.cpp
     util/crc32c.cpp
     util/env_posix.cpp
+    util/event_log.cpp
     util/histogram.cpp
+    util/json.cpp
     util/logger.cpp
+    util/metrics.cpp
     util/status.cpp
     version.cpp)
 
