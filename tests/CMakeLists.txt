@@ -68,6 +68,13 @@ if(STRATA_BUILD_TOOLS)
                    $<TARGET_FILE:stratasoak>)
   set_tests_properties(stratasoak_cli PROPERTIES LABELS integration)
 
+  # The release demo, run straight through, so it can never silently rot.
+  add_test(NAME demo_script
+           COMMAND ${CMAKE_COMMAND} -E env STRATA_BUILD_DIR=${CMAKE_BINARY_DIR}
+                   ${STRATA_TEST_LAUNCHER} bash ${PROJECT_SOURCE_DIR}/scripts/demo.sh
+                   --no-pause --dashboard_s 2)
+  set_tests_properties(demo_script PROPERTIES LABELS integration)
+
   # The embedded copies must be the files in tools/dashboard.
   strata_add_test(dashboard_files_test SUITE unit SOURCES unit/dashboard_files_test.cpp)
   target_link_libraries(dashboard_files_test PRIVATE strata_dashboard)
