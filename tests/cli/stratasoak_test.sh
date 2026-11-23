@@ -44,4 +44,13 @@ for flag in --keys=0 --keys=1000000000001 --value_size=1048577; do
   [[ $code -eq 2 ]] || fail "$flag should exit 2, got $code"
 done
 
+# The soak mode: reopens on a schedule, checks every key the writers touched,
+# and writes a report with its growth checks (which need at least 8 samples).
+"$SOAK" --db="$DIR/soak/db" --duration_s=9 --reopen_every_s=2 --sample_s=1 --progress_s=10 \
+    --keys=2000 --check_growth=1 --report="$DIR/report.json" >"$DIR/soak2.out" 2>&1 \
+  || fail "soak mode failed: $(cat "$DIR/soak2.out")"
+grep -q '^reopened (1), every key checked$' "$DIR/soak2.out" || fail "no reopen: $(cat "$DIR/soak2.out")"
+grep -q '"reopens": [1-9]' "$DIR/report.json" || fail "report: $(head -c 300 "$DIR/report.json")"
+grep -q '"passed": true' "$DIR/report.json" || fail "report has no passing check"
+
 echo "stratasoak CLI: ok"
