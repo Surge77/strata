@@ -46,6 +46,21 @@ void AppendLatency(std::string* out, const LatencyStats& latency) {
   Member(out, "p99", latency.p99, &first);
   Member(out, "p999", latency.p999, &first);
   Member(out, "max", latency.max, &first);
+  // [[upper_micros, count], ...]: pairs rather than objects, since a busy
+  // histogram has a hundred or more buckets and is sent once a second.
+  Key(out, "buckets", &first);
+  out->push_back('[');
+  for (std::size_t i = 0; i < latency.buckets.size(); ++i) {
+    if (i != 0) {
+      out->push_back(',');
+    }
+    out->push_back('[');
+    AppendJsonNumber(out, latency.buckets[i].upper_micros);
+    out->push_back(',');
+    AppendJsonNumber(out, latency.buckets[i].count);
+    out->push_back(']');
+  }
+  out->push_back(']');
   out->push_back('}');
 }
 

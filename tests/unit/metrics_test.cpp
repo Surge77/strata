@@ -276,6 +276,38 @@ TEST(SummarizeTest, CopiesThePercentiles) {
   EXPECT_DOUBLE_EQ(stats.max, 1000.0);
 }
 
+TEST(SummarizeTest, ListsTheNonEmptyBucketsInOrder) {
+  Histogram histogram;
+  histogram.Add(3);
+  histogram.Add(3);
+  histogram.Add(1000);
+  const LatencyStats stats = Summarize(histogram);
+  ASSERT_EQ(stats.buckets.size(), 2U);
+  EXPECT_EQ(stats.buckets[0].count, 2U);
+  EXPECT_EQ(stats.buckets[1].count, 1U);
+  // Exclusive upper bounds: each sample lies below its bucket's bound.
+  EXPECT_GT(stats.buckets[0].upper_micros, 3.0);
+  EXPECT_GT(stats.buckets[1].upper_micros, 1000.0);
+  EXPECT_LE(stats.buckets[1].upper_micros, 1000.0 * 17 / 16);
+  EXPECT_TRUE(Summarize(Histogram{}).buckets.empty());
+}
+
+TEST(SummarizeTest, BucketCountsAddUpToTheCount) {
+  Histogram histogram;
+  for (std::uint64_t value = 1; value <= 5000; value += 7) {
+    histogram.Add(value);
+  }
+  const LatencyStats stats = Summarize(histogram, 1000.0);
+  std::uint64_t total = 0;
+  double previous_bound = 0.0;
+  for (const LatencyBucket& bucket : stats.buckets) {
+    EXPECT_GT(bucket.upper_micros, previous_bound);
+    previous_bound = bucket.upper_micros;
+    total += bucket.count;
+  }
+  EXPECT_EQ(total, stats.count);
+}
+
 TEST(SummarizeTest, DividesEveryFigureByTheUnit) {
   Histogram histogram;
   histogram.Add(1000);

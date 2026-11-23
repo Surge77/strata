@@ -80,6 +80,13 @@ is what the caller waited. Each reports `count`, `mean`, `p50`, `p90`, `p99`, `p
 is not rounded to 0. Percentiles come from the same log-linear buckets as `Histogram`
 and are within 6.25% of the true value.
 
+Each latency also lists its non-empty `buckets` as `[upper_micros, count]` pairs in
+increasing order. A bucket holds the samples below its bound and at or above the previous
+one, and the counts add up to `count`. Everything above is cumulative since Open, so after
+an hour the percentiles hardly move. To see the latency of the last interval, subtract an
+earlier snapshot's count from each bucket's and read percentiles from what is left, as the
+dashboard does: a bound read that way is within 6.25% above the samples under it.
+
 ## Events
 
 | Event | Level | Fields |
@@ -118,7 +125,8 @@ character, so an event is always exactly one line and splits on spaces outside q
   "counters": { "get.calls": 15, ... },
   "gauges": { "memtable.bytes": 4096, ... },
   "latencies": {
-    "get":   { "count": 15, "mean": 1.9, "p50": 1.4, "p90": 2.8, "p99": 7.5, "p999": 7.9, "max": 8 },
+    "get":   { "count": 15, "mean": 1.9, "p50": 1.4, "p90": 2.8, "p99": 7.5, "p999": 7.9, "max": 8,
+               "buckets": [[1.024, 4], [1.472, 6], [2.944, 4], [8.192, 1]] },
     "write": { ... }
   },
   "levels": [   // one per level, 0 to 6

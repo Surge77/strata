@@ -9,6 +9,13 @@
 
 namespace strata {
 
+// Samples in one histogram bucket: those below `upper_micros` and at or
+// above the previous bucket's bound.
+struct LatencyBucket {
+  double upper_micros = 0.0;
+  std::uint64_t count = 0;
+};
+
 // A latency distribution in microseconds. Percentiles come from log-linear
 // buckets, so each is within 6.25% of the true sample value (see Histogram).
 struct LatencyStats {
@@ -21,6 +28,11 @@ struct LatencyStats {
   double p99 = 0.0;
   double p999 = 0.0;
   double max = 0.0;
+  // The non-empty buckets, in increasing order. Like the figures above they
+  // cover everything since Open; subtracting an earlier snapshot's counts
+  // bucket by bucket gives the distribution of just the samples in between,
+  // which is how a dashboard charts latency over time.
+  std::vector<LatencyBucket> buckets;
 };
 
 // One level of the LSM tree.

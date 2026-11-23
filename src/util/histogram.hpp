@@ -37,6 +37,10 @@ class Histogram {
   // [0, 100]. Percentile(0) is Min() and Percentile(100) is Max(); an empty
   // histogram returns 0.
   [[nodiscard]] double Percentile(double percent) const noexcept;
+  // Samples in one bucket, for `bucket` below kBucketCount.
+  [[nodiscard]] std::uint64_t BucketCount(std::size_t bucket) const noexcept {
+    return buckets_[bucket];
+  }
 
   // "count=1000 mean=12.4 stddev=3.1 min=2 p50=11.8 p90=16.0 p99=24.7 max=31"
   [[nodiscard]] std::string ToString() const;
