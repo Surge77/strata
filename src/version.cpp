@@ -6,6 +6,7 @@
 static_assert(strata::kVersionMajor == STRATA_VERSION_MAJOR);
 static_assert(strata::kVersionMinor == STRATA_VERSION_MINOR);
 static_assert(strata::kVersionPatch == STRATA_VERSION_PATCH);
+static_assert(strata::kVersionPreRelease == STRATA_VERSION_PRERELEASE);
 
 namespace strata {
 

@@ -31,16 +31,33 @@ std::uint32_t ParseU32(std::string_view s) {
   return value;
 }
 
-TEST(Version, StringIsThreeDottedComponents) {
-  const auto parts = Split(strata::version_string(), '.');
+// "1.0.0" or "1.0.0-rc.1": the part before any pre-release label.
+std::string_view Core() {
+  const std::string_view version = strata::version_string();
+  return version.substr(0, version.find('-'));
+}
+
+TEST(Version, CoreIsThreeDottedComponents) {
+  const auto parts = Split(Core(), '.');
   ASSERT_EQ(parts.size(), 3U);
   for (const auto& part : parts) {
     EXPECT_FALSE(part.empty());
   }
 }
 
+TEST(Version, PreReleaseLabelMatchesTheConstant) {
+  const std::string_view version = strata::version_string();
+  const std::size_t dash = version.find('-');
+  if (strata::kVersionPreRelease.empty()) {
+    EXPECT_EQ(dash, std::string_view::npos);
+  } else {
+    ASSERT_NE(dash, std::string_view::npos);
+    EXPECT_EQ(version.substr(dash + 1), strata::kVersionPreRelease);
+  }
+}
+
 TEST(Version, StringMatchesNumericConstants) {
-  const auto parts = Split(strata::version_string(), '.');
+  const auto parts = Split(Core(), '.');
   ASSERT_EQ(parts.size(), 3U);
   EXPECT_EQ(ParseU32(parts[0]), strata::kVersionMajor);
   EXPECT_EQ(ParseU32(parts[1]), strata::kVersionMinor);

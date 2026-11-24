@@ -200,21 +200,23 @@ Status DBImpl::DoCompaction(const Compaction& compaction, std::unique_lock<std::
     const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - start)
                             .count();
+    bool publish_failed = false;
     if (status.ok()) {
       for (FileMetaData& output : outputs) {
         edit.AddFile(compaction.output_level(), std::move(output));
       }
       status = versions_->LogAndApply(&edit);
-      if (!status.ok()) {
-        // Written but never committed: no version will ever reference them.
-        for (const auto& [level, output] : edit.new_files()) {
-          table_cache_->Evict(output.number);
-          static_cast<void>(env_->RemoveFile(TableFileName(dbname_, output.number)));
-        }
-      }
+      publish_failed = !status.ok();
     }
-    for (const std::uint64_t number : allocated) {
-      pending_outputs_.erase(number);
+    // A failed publish may still have committed: the edit can reach the
+    // MANIFEST before its sync fails, and the next open replays it. Deleting
+    // the outputs then would lose the whole key range, so they stay on disk,
+    // and stay pending so nothing in this session collects them. The next
+    // open's garbage collection removes them if the edit did not survive.
+    if (!publish_failed) {
+      for (const std::uint64_t number : allocated) {
+        pending_outputs_.erase(number);
+      }
     }
     if (status.ok()) {
       ++stats_.compactions;

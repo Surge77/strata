@@ -65,13 +65,18 @@ reports and skips:
 | Situation | Treatment |
 |---|---|
 | End of file exactly at a record boundary | end of log |
-| End of file inside a header or payload (torn tail) | end of log; **not** reported as corruption |
+| End of file inside a header or payload (torn tail) | end of log; **not** reported as corruption, unless a record whose checksum verifies follows the header (then the length is damaged: reported as below) |
 | Checksum mismatch | report the rest of the block dropped; resume at the next block. The length field is unverified, so following it could land mid-payload |
 | `length` runs past the end of the block | report the rest of the block dropped; skip to the next block |
-| `type` is `kZero` with zero length | skip the rest of the block silently (zero-filled space) |
+| `type` is `kZero` with zero length | skip the rest of the block silently (zero-filled space), unless a record whose checksum verifies follows: then the header was erased, and the rest of the block is reported dropped |
 | Unknown type | report the fragment dropped |
 | `kMiddle`/`kLast` without a preceding `kFirst` | report the fragment dropped |
 | `kFirst` or `kFull` while a record is in progress | report the partial record dropped; start the new one |
+
+Whenever the rest of a block is dropped, the reader also checks the dropped bytes for a
+record whose checksum verifies (`SkippedValidRecord()`). A torn write leaves nothing valid
+after it, so recovery never treats such damage as a torn tail, even inside the log's last
+block.
 
 Reports go to a caller-supplied `Reporter` (`Corruption(bytes_dropped, Status)`). Recovery
 (phase 3) decides whether a report is fatal. The default is to fail open, so no acknowledged
