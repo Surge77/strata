@@ -38,7 +38,7 @@ class BlockBuilder {
   [[nodiscard]] bool empty() const noexcept { return buffer_.empty(); }
 
  private:
-  const Comparator* comparator_;
+  [[maybe_unused]] const Comparator* comparator_;  // read only by an assert
   int restart_interval_;
   std::string buffer_;
   std::vector<std::uint32_t> restarts_;
