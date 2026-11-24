@@ -2,6 +2,8 @@
 
 What strata does not do, or does not do well, as of `v1.0.0-rc.1`. Each item says why, and
 what to do about it. Nothing here is a bug that is known and unfixed; those would be issues.
+The known bugs the pre-release audit found and deferred to `v1.0.0-rc.2`, none reachable
+without an I/O fault or a hostile file, are listed in `docs/journal/phase-15-release.md`.
 
 ## Scope
 

@@ -17,7 +17,7 @@ db.Delete("user:101");
 > reference laptop except two, reported under what actually ran
 > ([ADR-0010](docs/decisions/ADR-0010-release-1-0-0-rc-1.md)): the benchmark suite has not yet
 > been measured at CV ≤ 5% on a quiet host, and the soak ran for one hour rather than 24. Zero
-> sanitizer findings under GCC and clang; 96.7% line coverage (100% on the log and the
+> sanitizer findings under GCC and clang; 96.8% line coverage (100% on the log and the
 > manifest); every `fsync` proven load-bearing; each fuzz target clean for an hour. Try it with
 > [`scripts/demo.sh`](scripts/demo.sh); see what it does not do in
 > [docs/limitations.md](docs/limitations.md).
