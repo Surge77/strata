@@ -263,5 +263,20 @@ TEST_F(ErrorInjectionTest, SyncFailureDuringCompactionKeepsItsInputs) {
   ExpectKeys(0, kKeys);
 }
 
+// The edit reaches the MANIFEST before its sync fails, so whether the
+// compaction committed is unknown until the next open replays it. Its outputs
+// must survive either way: deleting them loses the key range if it did.
+TEST_F(ErrorInjectionTest, SyncFailureAtTheManifestCommitKeepsTheCompactionOutputs) {
+  Open();
+  MakeTwoOverlappingTables();
+  env_.SetSyncFailure(true, "MANIFEST-");
+  EXPECT_TRUE(db_->CompactLevelForTest(0).IsIoError());
+  env_.SetSyncFailure(false);
+
+  Reopen();
+  ExpectKeys(0, kKeys);
+  EXPECT_TRUE(Put("writable again", "y").ok());
+}
+
 }  // namespace
 }  // namespace strata
