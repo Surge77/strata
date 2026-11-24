@@ -51,6 +51,11 @@ class Reader {
   // File offset of the first header of the record most recently returned.
   [[nodiscard]] std::uint64_t LastRecordOffset() const noexcept { return last_record_offset_; }
 
+  // True once a stretch the reader skipped held a record whose checksum
+  // verifies. A torn write leaves nothing valid after it, so damage followed
+  // by such a record is corruption, even within the log's last block.
+  [[nodiscard]] bool SkippedValidRecord() const noexcept { return skipped_valid_record_; }
+
  private:
   // Outcomes of ReadPhysicalRecord beyond the fragment types.
   enum Outcome : unsigned {
@@ -60,6 +65,9 @@ class Reader {
 
   unsigned ReadPhysicalRecord(Slice* fragment);
   void ReportDrop(std::size_t bytes, Slice reason);
+  // Reports the rest of the current block dropped, noting whether it held a
+  // valid record, and moves on to the next block.
+  void DropRestOfBlock(Slice reason);
 
   SequentialFile* file_;
   Reporter* reporter_;
@@ -68,6 +76,7 @@ class Reader {
   bool eof_ = false;                        // the last block read was short: no more data
   std::uint64_t end_of_buffer_offset_ = 0;  // file offset just past buffer_
   std::uint64_t last_record_offset_ = 0;
+  bool skipped_valid_record_ = false;
 };
 
 }  // namespace strata::log

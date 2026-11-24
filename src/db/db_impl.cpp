@@ -284,11 +284,13 @@ Status DBImpl::RecoverLogFile(std::uint64_t number, bool newest, SequenceNumber*
 
   STRATA_RETURN_IF_ERROR(reporter.io_error());
   if (reporter.problems() > 0) {
-    if (newest && applied_after_problem == 0) {
+    if (newest && applied_after_problem == 0 && !reader.SkippedValidRecord()) {
       // Damage with nothing valid after it, at the end of the newest log, is
       // what an interrupted append looks like -- including after power loss,
       // when a record's first block can survive while the next reads back as
-      // zeros. Nothing in it was acknowledged as durable.
+      // zeros. Nothing in it was acknowledged as durable. "Nothing valid"
+      // includes the bytes the reader skipped: in a log of one partial block,
+      // records after the damage are never applied, only skipped.
       events_.Record(LogLevel::kWarn, "wal_torn_tail", {Field("file", file_name)});
     } else if (!options_.ignore_wal_corruption) {
       return reporter.first_problem();

@@ -4,6 +4,29 @@
 #include "util/crc32c.hpp"
 
 namespace strata::log {
+namespace {
+
+// Whether some offset in `region` starts a complete record whose checksum
+// verifies. A chance match needs a 32-bit checksum to agree, so a hit means
+// real records follow. Only run on bytes about to be dropped.
+bool HoldsValidRecord(Slice region) {
+  for (std::size_t offset = 0; offset + kHeaderSize <= region.size(); ++offset) {
+    const char* const header = region.data() + offset;
+    const std::uint32_t length =
+        static_cast<std::uint8_t>(header[4]) |
+        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[5])) << 8U);
+    const auto type = static_cast<std::uint8_t>(header[6]);
+    if (type == 0 || type > kMaxRecordType || kHeaderSize + length > region.size() - offset) {
+      continue;
+    }
+    if (crc32c::Unmask(DecodeFixed32(header)) == crc32c::Value(Slice(header + 6, 1 + length))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 Reader::Reader(SequentialFile* file, Reporter* reporter)
     : file_(file), reporter_(reporter), backing_store_(std::make_unique<char[]>(kBlockSize)) {}
@@ -12,6 +35,16 @@ void Reader::ReportDrop(std::size_t bytes, Slice reason) {
   if (reporter_ != nullptr) {
     reporter_->Corruption(bytes, Status::Corruption(reason));
   }
+}
+
+void Reader::DropRestOfBlock(Slice reason) {
+  // Skip the damaged header itself: its own bytes prove nothing.
+  if (HoldsValidRecord(Slice(buffer_.data() + 1, buffer_.size() - 1))) {
+    skipped_valid_record_ = true;
+  }
+  const std::size_t dropped = buffer_.size();
+  buffer_ = Slice();
+  ReportDrop(dropped, reason);
 }
 
 bool Reader::ReadRecord(Slice* record, std::string* scratch) {
@@ -125,21 +158,25 @@ unsigned Reader::ReadPhysicalRecord(Slice* fragment) {
     const auto type = static_cast<std::uint8_t>(header[6]);
 
     if (kHeaderSize + length > buffer_.size()) {
-      const std::size_t dropped = buffer_.size();
-      buffer_ = Slice();
-      if (eof_) {
-        // The payload runs past the end of the file: a torn write, not
-        // corruption -- see ReadRecord's kEof case.
+      if (eof_ && !HoldsValidRecord(Slice(header + 1, buffer_.size() - 1))) {
+        // The payload runs past the end of the file with nothing valid after
+        // it: a torn write, not corruption -- see ReadRecord's kEof case. A
+        // valid record after it means the length field itself is damaged.
+        buffer_ = Slice();
         return kEof;
       }
-      ReportDrop(dropped, "bad record length");
+      DropRestOfBlock("bad record length");
       return kBadRecord;
     }
 
     if (type == static_cast<std::uint8_t>(RecordType::kZero) && length == 0) {
-      // Zero-filled space (e.g. preallocation) contains no records. Skipped
-      // silently because nothing was ever written here.
-      buffer_ = Slice();
+      // Zero-filled space (e.g. preallocation) contains no records and is
+      // skipped silently -- unless records follow, so the header was erased.
+      if (HoldsValidRecord(Slice(header + 1, buffer_.size() - 1))) {
+        DropRestOfBlock("zeroed header followed by records");
+      } else {
+        buffer_ = Slice();
+      }
       return kBadRecord;
     }
 
@@ -150,9 +187,7 @@ unsigned Reader::ReadPhysicalRecord(Slice* fragment) {
       // The length field is unverified, so following it could land mid-payload
       // and misread arbitrary bytes as a header. Drop the rest of the block and
       // resynchronise at the next block boundary.
-      const std::size_t dropped = buffer_.size();
-      buffer_ = Slice();
-      ReportDrop(dropped, "checksum mismatch");
+      DropRestOfBlock("checksum mismatch");
       return kBadRecord;
     }
 
